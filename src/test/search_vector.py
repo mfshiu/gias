@@ -22,6 +22,7 @@ driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
 MODEL_ID = "gpt-4o-mini"
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+
 # ==========================================
 # 2. 輔助函數 (Embedding & Decomposition)
 # ==========================================
@@ -29,6 +30,7 @@ def get_embedding(text):
     """將文字轉為 1536 維向量"""
     text = text.replace("\n", " ")
     return client.embeddings.create(input=[text], model=EMBEDDING_MODEL).data[0].embedding
+
 
 def llm_query_decomposer(user_query):
     """Step 1: 將複雜語句拆解為單一意圖"""
