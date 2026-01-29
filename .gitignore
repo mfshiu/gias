@@ -210,4 +210,4 @@ __marimo__/
 .gitignore
 *.code-workspace
 mosquitto.bat
-src/gias.toml
+gias.toml
