@@ -207,7 +207,9 @@ marimo/_lsp/
 __marimo__/
 
 .vscode/
+_bak/
 .gitignore
 *.code-workspace
-mosquitto.bat
+bak_gias_src.bat
 gias.toml
+mosquitto.bat
