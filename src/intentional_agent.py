@@ -33,18 +33,31 @@ class IntentionalAgent(Agent):
         
         # 3. Finalize
         logger.debug("Finalizing agent process.")
-        
-        
+
+
+    def match_actions(self, intention:str):
+        logger.debug(f"Matching actions for sub-intention: {intention}")
+        # Placeholder for action matching logic
+        return [f"Action for: {intention}"]
+
+
     def plan_intention(self, intention:str):
         logger.debug(f"Planning intention: {intention}")
         
         sub_intentions = self.break_down_intention(intention)
         logger.debug(f"Sub-intentions: {sub_intentions}")
+
+        # Match actions for each sub-intention
+        actions = []
+        for sub_intention in sub_intentions:
+            actions.extend(self.match_actions(sub_intention))
+        actions = list(set(actions))  # 去重覆
+        logger.debug(f"Planned actions: {actions}")
         
         return [f"Execute step for: {intention}"]
     
     
-    def break_down_intention(self, intention: str):
+    def break_down_intention(self, intention: str) -> list:
         """
         使用 LLM-based intent parsing 將高階意圖拆解為子意圖
         回傳：List[str] 或 List[IntentCandidate]

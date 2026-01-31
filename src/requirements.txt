@@ -1,4 +1,10 @@
 colorama
+neo4j
+openai
+paho-mqtt
+pydantic
+pytest
+python-dotenv
 toml
 
 mas-agentflow
