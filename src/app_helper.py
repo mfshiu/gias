@@ -6,10 +6,11 @@ import toml
 
 
 def get_agent_config():
-    config_path = os.getenv('GIAS_CONFIG_PATH', os.path.join(os.getcwd(), 'gias.toml'))
-    agent_config = toml.load(config_path)
-
-    return agent_config
+    config_path = os.getenv(
+        "GIAS_CONFIG_PATH",
+        os.path.join(os.getcwd(), "gias.toml")
+    )
+    return toml.load(config_path)
 
 
 def wait_agent(agent):

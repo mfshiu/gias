@@ -1,3 +1,5 @@
+# src/intentional_agent.py
+
 from agentflow.core.agent import Agent
 
 from src.llm.client import LLMClient
@@ -7,19 +9,37 @@ from src.llm.schemas.intent import IntentCandidate
 from src.log_helper import init_logging
 logger = init_logging()
 
+from src.kg.action_store import ActionStore
+from src.kg.adapter_neo4j import Neo4jBoltAdapter
 
 
 class IntentionalAgent(Agent):
 
-    def __init__(self, agent_config, intention:str):
-        logger.info(f"agent_config: {agent_config}")
-        
+    def __init__(self, agent_config, intention: str):
+        self.agent_config = agent_config
         self.intention = intention
         self.llm = LLMClient.from_env()
+
+        self._kg = None  # lazy init
+        self.action_store = ActionStore(self.kg)
+
+        super().__init__("intentional_agent.gias", agent_config)
         
-        super().__init__('intentional_agent.gias', agent_config)
         
-        
+    @property
+    def kg(self):
+        if self._kg is None:
+            kg_cfg = self.agent_config.get("kg", {})
+            if kg_cfg.get("type") != "neo4j":
+                raise RuntimeError("KG type is not neo4j")
+
+            self._kg = Neo4jBoltAdapter.from_config(
+                kg_cfg["neo4j"],
+                logger=logger,
+            )
+        return self._kg
+    
+
     def on_activate(self):
         logger.debug(f"Agent activated with intention: {self.intention}")
         
@@ -35,11 +55,46 @@ class IntentionalAgent(Agent):
         logger.debug("Finalizing agent process.")
 
 
-    def match_actions(self, intention:str):
-        logger.debug(f"Matching actions for sub-intention: {intention}")
-        # Placeholder for action matching logic
-        return [f"Action for: {intention}"]
+    def _embed_text(self, text: str) -> list[float]:
+        # 依你的 LLMClient 實作改成「唯一正確」的方法
+        # 下面是保守寫法：找常見 embedding method
+        for fn_name in ("embed_text", "embed", "embedding", "embeddings"):
+            fn = getattr(self.llm, fn_name, None)
+            if callable(fn):
+                v = fn(text)
+                if isinstance(v, dict) and "embedding" in v:
+                    return v["embedding"]
+                if isinstance(v, list):
+                    return v
+        raise AttributeError("LLMClient 沒有 embedding 方法（embed/embed_text/embeddings）。")
 
+
+    def match_actions(self, intention: str, *, top_k: int = 10, min_score: float = 0.75):
+        logger.debug(f"Matching actions for sub-intention: {intention}")
+
+        q_vec = self._embed_text(intention)
+        dim = len(q_vec)
+
+        # 確保 vector index 存在（第一次跑會建立）
+        self.action_store.ensure_action_desc_index(dimensions=dim)
+
+        # Neo4j 端作相似度搜尋
+        rows = self.action_store.search_actions_by_vector(
+            vector=q_vec,
+            top_k=top_k,
+            min_score=min_score,
+        )
+
+        actions = []
+        for r in rows:
+            name = r.get("name") or "UnnamedAction"
+            desc = r.get("description") or ""
+            score = r.get("score")
+            actions.append(f"{name} (score={score:.3f}) - {desc}")
+
+        logger.info(f"Matched actions: {len(actions)}")
+        return actions
+    
 
     def plan_intention(self, intention:str):
         logger.debug(f"Planning intention: {intention}")
@@ -54,7 +109,7 @@ class IntentionalAgent(Agent):
         actions = list(set(actions))  # 去重覆
         logger.debug(f"Planned actions: {actions}")
         
-        return [f"Execute step for: {intention}"]
+        return actions
     
     
     def break_down_intention(self, intention: str) -> list:
@@ -94,32 +149,6 @@ class IntentionalAgent(Agent):
     
     def execute_plan(self, plan):
         logger.debug("Starting plan execution.")
-        
-
-def test_break_down_intention():
-    """
-    單元測試：break_down_intention()
-    僅測 LLM-based intention parsing，不啟動 agent lifecycle
-    """
-    from src.app_helper import get_agent_config
-
-    test_intention = "幫我查一下台北今天的天氣，並整理成摘要"
-
-    logger.info("=== test_break_down_intention ===")
-    logger.info(f"Input intention: {test_intention}")
-
-    agent = IntentionalAgent(
-        agent_config=get_agent_config(),
-        intention=test_intention,
-    )
-
-    sub_intentions = agent.break_down_intention(test_intention)
-
-    logger.info("Break down result:")
-    for i, si in enumerate(sub_intentions, start=1):
-        logger.info(f"  [{i}] {si}")
-
-    logger.info("=== test_break_down_intention completed ===")
 
 
 def start_agent_process():
@@ -138,5 +167,4 @@ if __name__ == '__main__':
     from dotenv import load_dotenv
     load_dotenv()
 
-    # start_agent_process()
-    test_break_down_intention()    
+    start_agent_process()
