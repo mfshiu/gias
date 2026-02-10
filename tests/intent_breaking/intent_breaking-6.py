@@ -1,3 +1,6 @@
+# tests\intent_breaking\intent_breaking-6.py
+# 測試案例 6: 複合意圖拆解與時間規劃 (JSON 回傳模式)
+
 import os
 import json
 import time

@@ -1,0 +1,87 @@
+Planned intention into action tree: {
+  "id": "root",
+  "intent": "我現在在會場入口，想參觀有趣的展區，可以推薦幾個適合我的展品， 順便告訴我怎麼走、路線怎麼安排，現在人會不會很多，途中如果有洗手間或服務台也請提醒我嗎？",
+  "depth": 0,
+  "scheduled_start": "N/A",
+  "type": "composite",
+  "sub_plans": [
+    {
+      "id": "1",
+      "intent": "推薦幾個適合我的展區",
+      "action": "RecommendExhibits(Interests=null, CurrentLocation=\"會場入口\", Limit=null)",
+      "depth": 1,
+      "scheduled_start": "",
+      "type": "atomic",
+      "is_atomic": true,
+      "atomic_source": "pre_defined",
+      "sub_plans": []
+    },
+    {
+      "id": "2",
+      "intent": "告訴我怎麼走和路線安排",
+      "action": "SuggestRoute(CurrentLocation=\"會場入口\", Interests=null, TimeBudgetMin=null, AvoidCrowd=null)",
+      "depth": 1,
+      "scheduled_start": "",
+      "type": "atomic",
+      "is_atomic": true,
+      "atomic_source": "pre_defined",
+      "sub_plans": []
+    },
+    {
+      "id": "3",
+      "intent": "說明現在各展區人潮多不多",
+      "action": "CrowdStatus(TargetArea=null, TimeWindowMin=null)",
+      "depth": 1,
+      "scheduled_start": "",
+      "type": "atomic",
+      "is_atomic": true,
+      "atomic_source": "pre_defined",
+      "sub_plans": []
+    },
+    {
+      "id": "4",
+      "intent": "提醒途中有洗手間或服務台的位置",
+      "action": "LocateFacility(FacilityType=\"洗手間與服務台\", CurrentLocation=\"會場入口\")",
+      "depth": 1,
+      "scheduled_start": "",
+      "type": "atomic",
+      "is_atomic": true,
+      "atomic_source": "pre_defined",
+      "sub_plans": []
+    }
+  ],
+  "execution_logic": [
+    {
+      "type": "Parallel",
+      "from_id": "1",
+      "to_id": "2"
+    },
+    {
+      "type": "Parallel",
+      "from_id": "1",
+      "to_id": "3"
+    },
+    {
+      "type": "Parallel",
+      "from_id": "1",
+      "to_id": "4"
+    }
+  ],
+  "debug": {
+    "sub_intentions": [
+      "推薦使用者適合的有趣展區或展品",
+      "安排參觀路線並提供怎麼走的指引",
+      "查詢目前會場的人流狀況",
+      "提醒途中洗手間及服務台位置"
+    ],
+    "selected_actions": {
+      "RecommendExhibits(Interests, CurrentLocation, Limit)": "根據訪客興趣推薦適合的展區或活動",
+      "ExplainExhibit(TargetType, TargetName, Language, DetailLevel)": "介紹指定展品或展區的內容與特色",
+      "LocateExhibit(TargetType, TargetName, CurrentLocation)": "引導訪客前往指定展區或攤位位置",
+      "CrowdStatus(TargetArea, TimeWindowMin)": "說明各展區目前的人潮與擁擠狀況",
+      "SuggestRoute(CurrentLocation, Interests, TimeBudgetMin, AvoidCrowd)": "根據訪客位置與需求規劃最佳參觀路線",
+      "AnswerFAQ(Question, EventDate, Language)": "回答關於會場規則、開放時間與服務設施的常見問題",
+      "LocateFacility(FacilityType, CurrentLocation)": "協助查找洗手間、出口、服務台或無障礙設施"
+    }
+  }
+}

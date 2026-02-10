@@ -8,6 +8,8 @@ Neo4j/Bolt 實作（Adapter）
 - 處理：database、fetch_size、timeout、重試（暫時性錯誤）、關閉資源
 
 擴充（本次新增）：
+- ✅ 修正「卡住」：補齊 driver connection timeout / acquisition timeout（避免卡在 Bolt socket recv）
+- ✅ 修正 query/tx timeout：使用 neo4j.Query(timeout=...)（更穩定、與 v5 驅動相容）
 - 支援 Neo4j 5.x Vector Index 建立（ensure_vector_index）
 - 支援 Cypher 端向量相似度查詢（vector_query_nodes / vector_query_relationships）
 """
@@ -19,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 import time
 import re
 
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, Query
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
 
 JsonDict = Dict[str, Any]
@@ -38,7 +40,16 @@ class Neo4jAdapterConfig:
     encrypted: bool = False
 
     fetch_size: int = 2000
-    timeout_sec: int = 15          # server-side tx timeout
+
+    # ⚠️ 重要：避免卡住
+    # - connection_timeout_sec：建立 TCP/Bolt 連線的 timeout（握手/連線階段）
+    # - acquisition_timeout_sec：從 pool 取得連線的 timeout（連線池耗盡/網路異常時）
+    connection_timeout_sec: int = 10
+    acquisition_timeout_sec: int = 10
+
+    # ✅ query / tx timeout（server-side；也能讓 driver 端較快中止等待）
+    timeout_sec: int = 15
+
     max_retries: int = 2
     retry_backoff_sec: float = 0.5
 
@@ -60,11 +71,34 @@ class Neo4jBoltAdapter:
         if self.config.user is not None:
             auth = (self.config.user or "", self.config.password or "")
 
-        self._driver = GraphDatabase.driver(
-            self.config.uri,
+        # ✅ 避免「卡在 _bolt_socket.recv」：把連線/取用 timeout 交給 driver 管
+        #    這些參數是 neo4j python driver v5 常用選項：
+        #    - connection_timeout：建立連線/握手的最大等待秒數
+        #    - connection_acquisition_timeout：從 pool 取連線的最大等待秒數
+        #    - max_transaction_retry_time：交易重試總時間上限（我們仍另外用 max_retries 控制次數）
+        driver_kwargs = dict(
             auth=auth,
             encrypted=self.config.encrypted,
+            connection_timeout=float(self.config.connection_timeout_sec),
+            connection_acquisition_timeout=float(self.config.acquisition_timeout_sec),
+            max_transaction_retry_time=float(self.config.timeout_sec),
         )
+
+        # 少數版本/環境若不支援某些 kwargs，會 TypeError；給出明確訊息
+        try:
+            self._driver = GraphDatabase.driver(self.config.uri, **driver_kwargs)
+        except TypeError as e:
+            # 退一步：至少要把 connection_timeout 帶上，避免無限等
+            self._log(
+                "warning",
+                f"Neo4j driver kwargs not fully supported ({e}). Falling back to minimal timeouts.",
+            )
+            self._driver = GraphDatabase.driver(
+                self.config.uri,
+                auth=auth,
+                encrypted=self.config.encrypted,
+                connection_timeout=float(self.config.connection_timeout_sec),
+            )
 
     @classmethod
     def from_config(cls, kg_cfg: dict, logger=None) -> "Neo4jBoltAdapter":
@@ -81,6 +115,9 @@ class Neo4jBoltAdapter:
             timeout_sec=kg_cfg.get("timeout_sec", 15),
             max_retries=kg_cfg.get("max_retries", 2),
             retry_backoff_sec=kg_cfg.get("retry_backoff_sec", 0.5),
+            # ✅ 新增：若 toml 有就吃，沒有就用預設
+            connection_timeout_sec=kg_cfg.get("connection_timeout_sec", 10),
+            acquisition_timeout_sec=kg_cfg.get("acquisition_timeout_sec", 10),
         )
         return cls(cfg, logger=logger)
 
@@ -88,8 +125,11 @@ class Neo4jBoltAdapter:
     # Lifecycle
     # -------------------------
     def close(self) -> None:
-        if self._driver is not None:
-            self._driver.close()
+        if getattr(self, "_driver", None) is not None:
+            try:
+                self._driver.close()
+            finally:
+                self._driver = None
 
     def __enter__(self) -> "Neo4jBoltAdapter":
         return self
@@ -121,7 +161,7 @@ class Neo4jBoltAdapter:
         )
 
     # -------------------------
-    # Vector Index / Vector Query APIs (新增)
+    # Vector Index / Vector Query APIs
     # -------------------------
     def ensure_vector_index(
         self,
@@ -135,13 +175,12 @@ class Neo4jBoltAdapter:
         """
         確保 Neo4j Vector Index 存在（Neo4j 5.x）
 
-        正確語法（Neo4j 5.x）：
         CREATE VECTOR INDEX <name> IF NOT EXISTS
         FOR (n:Label) ON (n.prop)
         OPTIONS { indexConfig: {`vector.dimensions`: <int>, `vector.similarity_function`: 'cosine' } }
 
         注意：DDL 對參數化支援不一致（尤其是 indexConfig 內），
-        為避免 "Invalid input" 類問題，本方法直接將 dimensions/similarity 寫死在 Cypher。
+        本方法將 dimensions/similarity 寫死在 Cypher。
         """
         if not index_name:
             raise ValueError("index_name is empty")
@@ -160,7 +199,6 @@ class Neo4jBoltAdapter:
         lab = self._escape_identifier(label)
         prop = self._escape_identifier(embedding_prop)
 
-        # ✅ Neo4j 5.x 正確語法（不要寫 CREATE VECTOR INDEX ... ON ... (沒有 FOR/ON 會錯）
         cypher = f"""
         CREATE VECTOR INDEX {idx} IF NOT EXISTS
         FOR (n:{lab})
@@ -184,10 +222,7 @@ class Neo4jBoltAdapter:
         return_props: Optional[List[str]] = None,
     ) -> List[JsonDict]:
         """
-        使用 Neo4j 原生向量查詢（在 DB 端算相似度）：
         CALL db.index.vector.queryNodes(indexName, k, vector) YIELD node, score
-
-        本方法將 node 映射成你要的 props + score（避免 node 無法 JSON 化）
         """
         if top_k <= 0:
             return []
@@ -232,10 +267,7 @@ class Neo4jBoltAdapter:
         return_props: Optional[List[str]] = None,
     ) -> List[JsonDict]:
         """
-        若 embedding 放在 Relationship 上，可用：
         CALL db.index.vector.queryRelationships(indexName, k, vector) YIELD relationship, score
-
-        注意：此 procedure 需 Neo4j 版本支援；不支援時會丟 Neo4jError。
         """
         if top_k <= 0:
             return []
@@ -274,12 +306,16 @@ class Neo4jBoltAdapter:
     # Internals
     # -------------------------
     def _run(self, session, cypher: str, params: Params, write: bool) -> List[JsonDict]:
-        tx_timeout = self.config.timeout_sec
+        """
+        ✅ 這裡改成使用 Query(timeout=...)，比 tx.run(..., timeout=..) 更穩：
+        - 與 neo4j python driver v5 的 managed tx 相容
+        - 對某些情況（等待結果/網路抖動）能更可靠地觸發 timeout
+        """
+        tx_timeout = float(self.config.timeout_sec)
+        q = Query(cypher, timeout=tx_timeout)
 
         def _execute(tx):
-            # ✅ 注意：neo4j python driver 建議 tx.run(cypher, parameters=params)
-            # 但你這版測試已經是 tx.run(cypher, params, timeout=...) 的寫法，這裡保持相容
-            result = tx.run(cypher, params, timeout=tx_timeout)
+            result = tx.run(q, params)
             return [dict(r) for r in result]
 
         if write:
@@ -295,6 +331,7 @@ class Neo4jBoltAdapter:
 
         for attempt in range(self.config.max_retries + 1):
             try:
+                # ✅ session 取得也可能卡：connection_acquisition_timeout 已在 driver 設定
                 with self._driver.session(
                     database=self.config.database,
                     fetch_size=self.config.fetch_size,
@@ -303,13 +340,17 @@ class Neo4jBoltAdapter:
 
             except (ServiceUnavailable, SessionExpired) as e:
                 last_exc = e
-                self._log("warning", f"Neo4jBoltAdapter.{op_name} transient error: {e} (attempt={attempt})")
+                self._log(
+                    "warning",
+                    f"Neo4jBoltAdapter.{op_name} transient error: {e} (attempt={attempt}/{self.config.max_retries})",
+                )
                 if attempt < self.config.max_retries:
                     time.sleep(self.config.retry_backoff_sec * (attempt + 1))
                     continue
                 raise
 
             except Neo4jError as e:
+                # 例如：Procedure 不存在、Cypher 語法錯、權限不足、timeout 等
                 self._log("error", f"Neo4jBoltAdapter.{op_name} neo4j error: {e}")
                 raise
 
@@ -362,6 +403,9 @@ def build_neo4j_adapter(
     max_retries: int = 2,
     retry_backoff_sec: float = 0.5,
     logger: Optional[Any] = None,
+    # ✅ 新增：避免卡住用
+    connection_timeout_sec: int = 10,
+    acquisition_timeout_sec: int = 10,
 ) -> Neo4jBoltAdapter:
     cfg = Neo4jAdapterConfig(
         uri=uri,
@@ -373,5 +417,7 @@ def build_neo4j_adapter(
         timeout_sec=timeout_sec,
         max_retries=max_retries,
         retry_backoff_sec=retry_backoff_sec,
+        connection_timeout_sec=connection_timeout_sec,
+        acquisition_timeout_sec=acquisition_timeout_sec,
     )
     return Neo4jBoltAdapter(cfg, logger=logger)
