@@ -10,7 +10,7 @@ from openai import OpenAI
 # ==========================================
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7689")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_AUTH = None # 根據你的設定，No Auth Mode
 
 if not OPENAI_API_KEY:

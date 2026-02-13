@@ -177,19 +177,25 @@ def _default_headers() -> list[str]:
 
 
 def main():
-    load_dotenv()
-
-    if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
-        raise RuntimeError("Missing OPENAI_API_KEY / OPENAI_KEY")
-
     cfg = get_agent_config()
+
+    # --- KG ---
     kg_cfg = cfg.get("kg", {})
     if kg_cfg.get("type") != "neo4j":
         raise RuntimeError("KG type must be neo4j for this seed script")
 
-    kg = Neo4jBoltAdapter.from_config(kg_cfg["neo4j"], logger=None)
-    llm = LLMClient.from_env()
+    neo = kg_cfg.get("neo4j")
+    if not isinstance(neo, dict):
+        raise RuntimeError("Missing [kg.neo4j] config in gias.toml")
 
+    kg = Neo4jBoltAdapter.from_config(neo, logger=None)
+
+    # --- LLM (✅ from_config, no .env) ---
+    llm_cfg = cfg.get("llm")
+    if not isinstance(llm_cfg, dict):
+        raise RuntimeError("Missing [llm] config in gias.toml")
+    llm = LLMClient.from_config(cfg)
+    
     # === 清資料：Action/Param/Agent/Topic/Schema 都清掉，避免殘留舊契約 ===
     print(">>> Clearing existing nodes: Action/Param/Agent/Topic/MessageSchema")
     kg.write("MATCH (a:Action) DETACH DELETE a")

@@ -4,13 +4,14 @@ Neo4j/Bolt 實作（Adapter）
 
 定位：
 - 封裝 neo4j driver / session / transaction 細節
-- 提供統一的 read / write 執行入口（回傳 list[dict]）
+- 提供統一的 read / write / query 執行入口（回傳 list[dict]）
 - 處理：database、fetch_size、timeout、重試（暫時性錯誤）、關閉資源
 
 擴充（本次新增）：
-- ✅ 修正「卡住」：補齊 driver connection timeout / acquisition timeout（避免卡在 Bolt socket recv）
-- ✅ 修正 query/tx timeout：使用 neo4j.Query(timeout=...)（更穩定、與 v5 驅動相容）
-- 支援 Neo4j 5.x Vector Index 建立（ensure_vector_index）
+- ✅ 修正「卡住」：補齊 driver connection timeout / acquisition timeout（避免卡在 Bolt socket recv / pool wait）
+- ✅ 修正 query/tx timeout：使用 tx.run(timeout=...)（neo4j python driver v5 相容）
+- ✅ 補齊 query() 介面：兼容 ActionStore / Matcher（避免 'Neo4jBoltAdapter' object has no attribute 'query'）
+- ✅ ensure_vector_index：若 index 存在但 dimensions 不同，會 drop + recreate
 - 支援 Cypher 端向量相似度查詢（vector_query_nodes / vector_query_relationships）
 """
 
@@ -21,7 +22,7 @@ from typing import Any, Callable, Dict, List, Optional
 import time
 import re
 
-from neo4j import GraphDatabase, Query
+from neo4j import GraphDatabase
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
 
 JsonDict = Dict[str, Any]
@@ -42,12 +43,10 @@ class Neo4jAdapterConfig:
     fetch_size: int = 2000
 
     # ⚠️ 重要：避免卡住
-    # - connection_timeout_sec：建立 TCP/Bolt 連線的 timeout（握手/連線階段）
-    # - acquisition_timeout_sec：從 pool 取得連線的 timeout（連線池耗盡/網路異常時）
     connection_timeout_sec: int = 10
     acquisition_timeout_sec: int = 10
 
-    # ✅ query / tx timeout（server-side；也能讓 driver 端較快中止等待）
+    # ✅ query / tx timeout（秒）
     timeout_sec: int = 15
 
     max_retries: int = 2
@@ -66,29 +65,23 @@ class Neo4jBoltAdapter:
         self.config = config
         self._logger = logger
 
-        # Neo4j no-auth 時可以不提供 auth
         auth = None
         if self.config.user is not None:
             auth = (self.config.user or "", self.config.password or "")
 
-        # ✅ 避免「卡在 _bolt_socket.recv」：把連線/取用 timeout 交給 driver 管
-        #    這些參數是 neo4j python driver v5 常用選項：
-        #    - connection_timeout：建立連線/握手的最大等待秒數
-        #    - connection_acquisition_timeout：從 pool 取連線的最大等待秒數
-        #    - max_transaction_retry_time：交易重試總時間上限（我們仍另外用 max_retries 控制次數）
+        # ✅ 避免卡住：交由 driver 控制連線與連線池等待時間
+        # 注意：不同 neo4j driver 版本對 kwargs 支援不一樣，故採 try/fallback
         driver_kwargs = dict(
             auth=auth,
             encrypted=self.config.encrypted,
             connection_timeout=float(self.config.connection_timeout_sec),
             connection_acquisition_timeout=float(self.config.acquisition_timeout_sec),
-            max_transaction_retry_time=float(self.config.timeout_sec),
         )
 
-        # 少數版本/環境若不支援某些 kwargs，會 TypeError；給出明確訊息
         try:
             self._driver = GraphDatabase.driver(self.config.uri, **driver_kwargs)
         except TypeError as e:
-            # 退一步：至少要把 connection_timeout 帶上，避免無限等
+            # 某些環境/driver 版本可能不支援部分 kwargs
             self._log(
                 "warning",
                 f"Neo4j driver kwargs not fully supported ({e}). Falling back to minimal timeouts.",
@@ -115,7 +108,6 @@ class Neo4jBoltAdapter:
             timeout_sec=kg_cfg.get("timeout_sec", 15),
             max_retries=kg_cfg.get("max_retries", 2),
             retry_backoff_sec=kg_cfg.get("retry_backoff_sec", 0.5),
-            # ✅ 新增：若 toml 有就吃，沒有就用預設
             connection_timeout_sec=kg_cfg.get("connection_timeout_sec", 10),
             acquisition_timeout_sec=kg_cfg.get("acquisition_timeout_sec", 10),
         )
@@ -142,7 +134,7 @@ class Neo4jBoltAdapter:
     # -------------------------
     def read(self, cypher: str, params: Optional[Params] = None) -> List[JsonDict]:
         """
-        Read-only query. ⚠️ 不得包含 CREATE / MERGE / SET / DELETE 等寫入操作。
+        Read-only query.
         Return: list[dict] (each record -> dict)
         """
         return self._run_with_retry(
@@ -152,13 +144,22 @@ class Neo4jBoltAdapter:
 
     def write(self, cypher: str, params: Optional[Params] = None) -> List[JsonDict]:
         """
-        Write query. 可包含 CREATE / MERGE / SET / DELETE 等寫入操作。
+        Write query.
         Return: list[dict] (each record -> dict)
         """
         return self._run_with_retry(
             op_name="write",
             runner=lambda session: self._run(session, cypher, params or {}, write=True),
         )
+
+    def query(self, cypher: str, params: Optional[Params] = None, *, write: bool = False) -> List[JsonDict]:
+        """
+        ✅ 兼容介面：ActionStore / Matcher 常用 query()。
+        預設視為 read；若 write=True 則走 write。
+        """
+        if write:
+            return self.write(cypher, params)
+        return self.read(cypher, params)
 
     # -------------------------
     # Vector Index / Vector Query APIs
@@ -171,16 +172,11 @@ class Neo4jBoltAdapter:
         embedding_prop: str,
         dimensions: int,
         similarity: str = "cosine",
+        drop_if_dimension_mismatch: bool = True,
     ) -> None:
         """
         確保 Neo4j Vector Index 存在（Neo4j 5.x）
-
-        CREATE VECTOR INDEX <name> IF NOT EXISTS
-        FOR (n:Label) ON (n.prop)
-        OPTIONS { indexConfig: {`vector.dimensions`: <int>, `vector.similarity_function`: 'cosine' } }
-
-        注意：DDL 對參數化支援不一致（尤其是 indexConfig 內），
-        本方法將 dimensions/similarity 寫死在 Cypher。
+        - 若已存在且 dimensions 不同，預設會 drop + recreate（避免你之前的 dims=8 汙染）
         """
         if not index_name:
             raise ValueError("index_name is empty")
@@ -198,6 +194,23 @@ class Neo4jBoltAdapter:
         idx = self._escape_identifier(index_name)
         lab = self._escape_identifier(label)
         prop = self._escape_identifier(embedding_prop)
+
+        # ✅ 若 index 存在且 dimensions 不同 → drop
+        try:
+            existing_dim = self._get_vector_index_dimensions(index_name)
+            if (
+                drop_if_dimension_mismatch
+                and existing_dim is not None
+                and int(existing_dim) != int(dimensions)
+            ):
+                self._log(
+                    "warning",
+                    f"Vector index '{index_name}' dimension mismatch: existing={existing_dim}, want={dimensions}. Dropping.",
+                )
+                self.write(f"DROP INDEX {idx} IF EXISTS")
+        except Exception as e:
+            # SHOW INDEXES 在部分版本/權限下可能失敗：不致命，繼續走 CREATE IF NOT EXISTS
+            self._log("warning", f"ensure_vector_index: failed to inspect existing index: {e}")
 
         cypher = f"""
         CREATE VECTOR INDEX {idx} IF NOT EXISTS
@@ -307,15 +320,12 @@ class Neo4jBoltAdapter:
     # -------------------------
     def _run(self, session, cypher: str, params: Params, write: bool) -> List[JsonDict]:
         """
-        ✅ 這裡改成使用 Query(timeout=...)，比 tx.run(..., timeout=..) 更穩：
-        - 與 neo4j python driver v5 的 managed tx 相容
-        - 對某些情況（等待結果/網路抖動）能更可靠地觸發 timeout
+        用 execute_read/execute_write 執行，並在 tx.run 設定 timeout。
         """
         tx_timeout = float(self.config.timeout_sec)
-        q = Query(cypher, timeout=tx_timeout)
 
         def _execute(tx):
-            result = tx.run(q, params)
+            result = tx.run(cypher, params, timeout=tx_timeout)
             return [dict(r) for r in result]
 
         if write:
@@ -327,11 +337,8 @@ class Neo4jBoltAdapter:
         op_name: str,
         runner: Callable[[Any], List[JsonDict]],
     ) -> List[JsonDict]:
-        last_exc: Optional[Exception] = None
-
         for attempt in range(self.config.max_retries + 1):
             try:
-                # ✅ session 取得也可能卡：connection_acquisition_timeout 已在 driver 設定
                 with self._driver.session(
                     database=self.config.database,
                     fetch_size=self.config.fetch_size,
@@ -339,7 +346,6 @@ class Neo4jBoltAdapter:
                     return runner(session)
 
             except (ServiceUnavailable, SessionExpired) as e:
-                last_exc = e
                 self._log(
                     "warning",
                     f"Neo4jBoltAdapter.{op_name} transient error: {e} (attempt={attempt}/{self.config.max_retries})",
@@ -350,18 +356,42 @@ class Neo4jBoltAdapter:
                 raise
 
             except Neo4jError as e:
-                # 例如：Procedure 不存在、Cypher 語法錯、權限不足、timeout 等
+                # Neo4jError 裡也可能是暫時性（例如 transient）— 但保守起見不做碼判斷，交給上層決策
                 self._log("error", f"Neo4jBoltAdapter.{op_name} neo4j error: {e}")
                 raise
 
             except Exception as e:
-                last_exc = e
                 self._log("error", f"Neo4jBoltAdapter.{op_name} unexpected error: {e}")
                 raise
 
-        if last_exc:
-            raise last_exc
         return []
+
+    def _get_vector_index_dimensions(self, index_name: str) -> Optional[int]:
+        """
+        讀取現有 vector index 的 dimensions（Neo4j 5.x）
+        若找不到或欄位不可用，回傳 None
+        """
+        # SHOW INDEXES 欄位隨版本可能略有差異，但 options 通常存在
+        cypher = """
+        SHOW INDEXES
+        YIELD name, type, options
+        WHERE name = $name
+        RETURN name, type, options
+        """
+        rows = self.read(cypher, {"name": index_name})
+        if not rows:
+            return None
+
+        options = rows[0].get("options") or {}
+        # 期待格式：options.indexConfig["vector.dimensions"]
+        index_cfg = options.get("indexConfig") or {}
+        dim = index_cfg.get("vector.dimensions")
+        if dim is None:
+            return None
+        try:
+            return int(dim)
+        except Exception:
+            return None
 
     def _log(self, level: str, msg: str) -> None:
         if not self._logger:
@@ -403,7 +433,6 @@ def build_neo4j_adapter(
     max_retries: int = 2,
     retry_backoff_sec: float = 0.5,
     logger: Optional[Any] = None,
-    # ✅ 新增：避免卡住用
     connection_timeout_sec: int = 10,
     acquisition_timeout_sec: int = 10,
 ) -> Neo4jBoltAdapter:

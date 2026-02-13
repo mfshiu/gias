@@ -2,21 +2,17 @@
 """
 KGClient（對外 API）
 
-重整重點（你要的版本）：
-- ✅ 上層（GIAS其他模組）只能透過 KGClient 存取 KG（禁止散落 Cypher）
-- ✅ 讀寫分離：queries.py（read）/ commands.py（write）
-- ✅ 低階連線/交易/重試/timeout 全交給 adapter_neo4j.py（避免職責重疊）
-- ✅ KGClient 專心提供「語意層 API」與一致的回傳格式
-
-相依：
-- neo4j 官方驅動：pip install neo4j
+設計原則（統一版）：
+- ✅ 完全以 gias.toml（agent_config）為設定來源
+- ❌ 不再讀 .env / os.getenv
+- ✅ 上層只能透過 KGClient 存取 KG
+- ✅ 低階連線 / retry / timeout 全交給 Neo4jBoltAdapter
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Union
-import os
 
 from .adapter_neo4j import Neo4jBoltAdapter, Neo4jAdapterConfig
 from . import queries as Q
@@ -33,13 +29,12 @@ class KGClientConfig:
     uri: str
     user: Optional[str] = None
     password: Optional[str] = None
-    database: Optional[str] = None  # Neo4j 5 可指定 database；不指定則用預設
+    database: Optional[str] = None
     encrypted: bool = False
 
-    # 行為設定
     max_retries: int = 2
     retry_backoff_sec: float = 0.5
-    query_timeout_sec: int = 15  # 交易逾時（server-side）
+    query_timeout_sec: int = 15
     fetch_size: int = 2000
 
 
@@ -48,7 +43,7 @@ class KGClientConfig:
 # -------------------------
 class KGClient:
     """
-    對外 API：提供「語意層」的 KG 操作，不直接暴露 Cypher 給上層。
+    對外 API：提供「語意層」的 KG 操作。
     """
 
     def __init__(self, config: KGClientConfig, logger: Optional[Any] = None):
@@ -82,23 +77,17 @@ class KGClient:
         self.close()
 
     # -------------------------
-    # Low-level (internal use)
+    # Low-level (internal / debug)
     # -------------------------
     def query_raw(self, cypher: str, params: Optional[Dict[str, Any]] = None) -> List[JsonDict]:
-        """
-        低階讀取：保留給 debug 或特殊情境；一般請走語意 API。
-        """
         return self._adapter.read(cypher, params or {})
 
     def command_raw(self, cypher: str, params: Optional[Dict[str, Any]] = None) -> List[JsonDict]:
-        """低階寫入：保留給 debug 或特殊情境；一般請走語意 API。"""
         return self._adapter.write(cypher, params or {})
 
     # -------------------------
-    # Semantic APIs (GIAS-friendly)
+    # Semantic APIs
     # -------------------------
-
-    # 1) 概念錨定 / Grounding
     def grounding_candidates(
         self,
         terms: Sequence[str],
@@ -109,7 +98,6 @@ class KGClient:
         cypher, params = Q.grounding_candidates(terms=terms, label=label, prop=prop, top_k=top_k)
         return self._adapter.read(cypher, params)
 
-    # 2) 取出某概念相關事實/片段（給 RAG）
     def get_facts_by_concept(
         self,
         concept_id: Union[int, str],
@@ -125,7 +113,6 @@ class KGClient:
         )
         return self._adapter.read(cypher, params)
 
-    # 3) 前置條件檢查（提供 feasibility）
     def check_preconditions(
         self,
         action_name: str,
@@ -134,23 +121,17 @@ class KGClient:
     ) -> JsonDict:
         cypher, params = Q.preconditions_by_action(action_name=action_name, top_k=top_k)
         rows = self._adapter.read(cypher, params)
-        if not rows:
-            result: JsonDict = {"action": action_name, "preconditions": []}
-        else:
-            result = rows[0]
-
+        result = rows[0] if rows else {"action": action_name, "preconditions": []}
         if context is not None:
-            # 不在這裡做判斷，只回傳讓上層比對 ground truth
             result["context_echo"] = context
         return result
 
-    # 4) 程序步驟（拆解用）
     def get_procedure_steps(self, goal_name: str, top_k: int = 50) -> List[JsonDict]:
         cypher, params = Q.procedure_steps_by_goal(goal_name=goal_name, top_k=top_k)
         return self._adapter.read(cypher, params)
 
     # -------------------------
-    # Write APIs (safe wrappers)
+    # Write APIs
     # -------------------------
     def upsert_concept(self, name: str, extra: Optional[Dict[str, Any]] = None) -> JsonDict:
         cypher, params = C.upsert_concept(name=name, extra=extra)
@@ -193,7 +174,12 @@ class KGClient:
         rel: str,
         rel_props: Optional[Dict[str, Any]] = None,
     ) -> JsonDict:
-        cypher, params = C.link_existing_nodes_by_id(from_id=from_id, to_id=to_id, rel=rel, rel_props=rel_props)
+        cypher, params = C.link_existing_nodes_by_id(
+            from_id=from_id,
+            to_id=to_id,
+            rel=rel,
+            rel_props=rel_props,
+        )
         rows = self._adapter.write(cypher, params)
         return rows[0] if rows else {}
 
@@ -202,42 +188,31 @@ class KGClient:
         self._adapter.write(cypher, params)
         return {"deleted": True, "node_id": node_id}
 
-
     # -------------------------
-    # Convenience constructor
+    # Factory (唯一入口)
     # -------------------------
     @staticmethod
-    def from_env(logger: Optional[Any] = None) -> "KGClient":
-        """
-        從環境變數讀取（建議放在 .env）
-        - NEO4J_URI=bolt://localhost:7687
-        - NEO4J_USER=neo4j
-        - NEO4J_PASSWORD=pass
-        - NEO4J_DATABASE=neo4j (可選)
-        - NEO4J_ENCRYPTED=false
-        - KG_MAX_RETRIES=2
-        - KG_TIMEOUT_SEC=15
-        - KG_FETCH_SIZE=2000
-        """
-        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        user = os.getenv("NEO4J_USER")
-        password = os.getenv("NEO4J_PASSWORD")
-        database = os.getenv("NEO4J_DATABASE")
-        encrypted = os.getenv("NEO4J_ENCRYPTED", "false").lower() in ("1", "true", "yes")
+    def from_config(agent_config: dict, logger: Optional[Any] = None) -> "KGClient":
+        kg_cfg = agent_config.get("kg")
+        if not isinstance(kg_cfg, dict):
+            raise RuntimeError("Missing [kg] section in gias.toml")
 
-        max_retries = int(os.getenv("KG_MAX_RETRIES", "2"))
-        timeout_sec = int(os.getenv("KG_TIMEOUT_SEC", "15"))
-        fetch_size = int(os.getenv("KG_FETCH_SIZE", "2000"))
+        if kg_cfg.get("type") != "neo4j":
+            raise RuntimeError(f"Unsupported KG type: {kg_cfg.get('type')}")
+
+        neo = kg_cfg.get("neo4j")
+        if not isinstance(neo, dict):
+            raise RuntimeError("Missing [kg.neo4j] section in gias.toml")
 
         cfg = KGClientConfig(
-            uri=uri,
-            user=user,
-            password=password,
-            database=database,
-            encrypted=encrypted,
-            max_retries=max_retries,
-            retry_backoff_sec=float(os.getenv("KG_RETRY_BACKOFF_SEC", "0.5")),
-            query_timeout_sec=timeout_sec,
-            fetch_size=fetch_size,
+            uri=neo["uri"],
+            user=neo.get("user"),
+            password=neo.get("password"),
+            database=neo.get("database"),
+            encrypted=neo.get("encrypted", False),
+            fetch_size=kg_cfg.get("fetch_size", 2000),
+            query_timeout_sec=kg_cfg.get("timeout_sec", 15),
+            max_retries=kg_cfg.get("max_retries", 2),
+            retry_backoff_sec=kg_cfg.get("retry_backoff_sec", 0.5),
         )
         return KGClient(cfg, logger=logger)

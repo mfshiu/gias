@@ -11,7 +11,7 @@ from openai import OpenAI
 load_dotenv()
 
 # 設定 URI (預設本地端)
-URI = os.getenv("NEO4J_URI", "bolt://localhost:7689")
+URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 
 # --- 修改處：設定 AUTH 為 None ---
 AUTH = None 

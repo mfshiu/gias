@@ -5,6 +5,7 @@ class RecursivePlanner:
         self.decomposer = decomposer
         self.logger = logger
 
+
     def plan(self, intent, available_actions, *, depth=0, max_depth=4, scheduled_start="N/A", node_id="root"):
         indent = "    " * depth
         prefix = "└── " if depth > 0 else "[ROOT] "

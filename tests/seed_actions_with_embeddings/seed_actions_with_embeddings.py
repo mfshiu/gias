@@ -35,25 +35,29 @@ ACTIONS = [
 
 
 def main():
-    load_dotenv()
-
-    # 檢查 LLM key（你的專案之前同時可能用 OPENAI_KEY / OPENAI_API_KEY）
-    if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
-        raise RuntimeError("Missing OPENAI_API_KEY / OPENAI_KEY")
-
+    # ✅ 不再 load_dotenv()；也不再讀 OPENAI_API_KEY / OPENAI_KEY
     cfg = get_agent_config()
 
-    # 建立 KG adapter（延遲在這裡做，符合你目前設計）
+    # --- KG adapter（仍依 gias.toml / agent_config）---
     kg_cfg = cfg.get("kg", {})
     if kg_cfg.get("type") != "neo4j":
         raise RuntimeError("KG type must be neo4j for this seed script")
 
+    neo4j_cfg = kg_cfg.get("neo4j")
+    if not isinstance(neo4j_cfg, dict):
+        raise RuntimeError("Missing [kg.neo4j] config in gias.toml")
+
     kg = Neo4jBoltAdapter.from_config(
-        kg_cfg["neo4j"],
+        neo4j_cfg,
         logger=None,
     )
 
-    llm = LLMClient.from_env()
+    # --- LLM client（✅ 完全使用 gias.toml / agent_config）---
+    llm_cfg = cfg.get("llm")
+    if not isinstance(llm_cfg, dict):
+        raise RuntimeError("Missing [llm] config in gias.toml")
+
+    llm = LLMClient.from_config(cfg)
 
     print(">>> Clearing existing Action nodes")
     kg.write("MATCH (a:Action) DETACH DELETE a")

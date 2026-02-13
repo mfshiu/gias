@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from ..client import LLMClient, LLMSchemaValidationError, LLMInvalidJSONError
+from ..client import LLMClient
+from ..errors import LLMSchemaValidationError, LLMInvalidJSONError
 from ..prompts.registry import PromptRegistry, PromptMeta
 from ..schemas.intent import IntentParseResult
 
@@ -12,13 +13,6 @@ from ..schemas.intent import IntentParseResult
 DEFAULT_TEMPLATE = "intent_parse_v1"
 
 
-# parse_intent()
-# - 任務層（Tasks）：所有代理都只呼叫這裡，不直接碰 prompt / provider / retry 細節
-# - 負責：
-#   1) 準備 prompt 變數
-#   2) 取 PromptRegistry 模板並渲染成 messages
-#   3) 呼叫 LLMClient.json() 並以 Pydantic schema 驗證
-#   4) 若 schema 失敗：加上修復提示再試一次（可控次數）
 def parse_intent(
     llm: LLMClient,
     user_text: str,
@@ -31,7 +25,6 @@ def parse_intent(
 ) -> Tuple[IntentParseResult, PromptMeta]:
     """
     解析自然語言 -> IntentParseResult（含 candidates）
-
     回傳：(result, prompt_meta)
     """
     registry = registry or PromptRegistry.from_default()
@@ -74,37 +67,37 @@ def parse_intent(
         except (LLMSchemaValidationError, LLMInvalidJSONError) as e:
             last_err = str(e)
 
-    # 仍失敗：把錯誤往上丟，讓上層決定怎麼處理（例如降級模型或改走人工）
     raise LLMSchemaValidationError(f"parse_intent failed after fix retries: {last_err}")
 
 
-def main():
+def main() -> None:
+    # 測試輸入
     test_input = "幫我查一下台北今天的天氣"
     test_input = "下午三點移動至 301 會議室，開啟空調。然後準備投影設備，並通知所有參與者。"
     test_input = "一邊播放輕音樂，一邊把燈光調暗。"
     test_input = "準備 301 會議室，下午兩點要跟客戶進行視訊提案。"
     test_input = "先去 A1 倉庫領取測試樣品並送往 301 會議室，接著在下午兩點準時為 VIP 客戶進行產品演示，演示包含投影控制與樣品解說，完成後引導客戶前往 1 樓出口並發送滿意度調查。"
 
-    # 1) 建立 LLMClient（依你的 LLMClient 實作調整參數）
-    #    常見：LLMClient.from_env() / LLMClient() / LLMClient(provider=...)
-    llm = LLMClient.from_env()
+    # ✅ 改為：完全使用 gias.toml（透過 get_agent_config() 取得 agent_config）
+    from app_helper import get_agent_config
 
-    # 2) 正確呼叫：先傳 llm，再傳 user_text
+    agent_config = get_agent_config()
+    llm = LLMClient.from_config(agent_config)
+
+    # 正確呼叫：先傳 llm，再傳 user_text
     result, meta = parse_intent(llm, test_input)
 
-    # 3) candidates 才是意圖清單
-    intents = result.candidates
+    intents = result.candidates or []
 
     print("=== parse_intent 測試結果 ===")
     print(f"template={getattr(meta, 'template_name', 'N/A')} version={getattr(meta, 'version', 'N/A')}")
 
     for i, intent in enumerate(intents, start=1):
         print(f"\nIntent {i}")
-        print(intent.model_dump())  # Pydantic v2
+        # Pydantic v2
+        print(intent.model_dump())
 
 
 if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-    
+    # ✅ 不再需要 dotenv / .env
     main()
