@@ -1,4 +1,4 @@
-from llm.client import LLMClient
+from src.llm.client import LLMClient
 
 class LLMEmbedder:
     def __init__(self, llm: LLMClient):

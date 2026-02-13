@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from llm.types import LLMResponse, LLMUsage
+from .types import LLMResponse, LLMUsage
 
 
 def usage_from_any(usage_any: Any) -> LLMUsage:

@@ -1,6 +1,6 @@
 import pytest
 
-from kg import queries as Q
+from src.kg import queries as Q
 
 
 # -------------------------

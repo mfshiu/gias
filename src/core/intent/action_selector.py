@@ -1,4 +1,4 @@
-from core.actions.models import ActionMatch
+from src.core.actions.models import ActionMatch
 from .sub_intent import SubIntent
 
 

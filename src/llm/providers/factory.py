@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from llm.config import LLMRuntimeConfig
-from llm.types import ProviderClient
+from ..config import LLMRuntimeConfig
+from ..types import ProviderClient
 
 
 def build_provider_client(cfg: LLMRuntimeConfig) -> tuple[ProviderClient, Optional[str], Optional[str]]:

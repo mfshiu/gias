@@ -6,22 +6,19 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 from typing import cast
-from llm.types import EmbeddingProviderClient
-
-from llm.config import load_llm_runtime_config
-from llm.providers.factory import build_provider_client
-from llm.retry import call_with_retry, is_retriable_exception
-from llm.normalize import normalize_response
-from llm.json_utils import parse_json, validate_schema
-from llm.embedding import normalize_embedding
-from llm.errors import (
+from .types import EmbeddingProviderClient, LLMResponse, ProviderClient, SchemaType
+from .config import load_llm_runtime_config
+from .providers.factory import build_provider_client
+from .retry import call_with_retry, is_retriable_exception
+from .normalize import normalize_response
+from .json_utils import parse_json, validate_schema
+from .embedding import normalize_embedding
+from .errors import (
     LLMError,
     LLMTimeoutError,
     LLMRateLimitError,
     LLMEmbeddingNotSupportedError,
 )
-
-from llm.types import LLMResponse, ProviderClient, SchemaType
 
 
 class LLMClient:

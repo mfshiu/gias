@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from kg.client import KGClient, KGClientConfig
+from src.kg.client import KGClient, KGClientConfig
 
 
 # -------------------------

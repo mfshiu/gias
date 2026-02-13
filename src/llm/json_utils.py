@@ -5,8 +5,8 @@ import json
 import re
 from typing import Any, Dict, Optional
 
-from llm.errors import LLMInvalidJSONError, LLMSchemaValidationError
-from llm.types import JsonType, SchemaType
+from .errors import LLMInvalidJSONError, LLMSchemaValidationError
+from .types import JsonType, SchemaType
 
 
 def parse_json(content: str, *, strict_json: bool) -> JsonType:

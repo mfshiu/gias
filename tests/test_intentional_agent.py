@@ -3,11 +3,11 @@ import logging
 import pytest
 from dotenv import load_dotenv
 
-from app_helper import get_agent_config
-from core.intentional_agent import IntentionalAgent
-from kg.adapter_neo4j import build_neo4j_adapter
-from llm.client import LLMClient
-from core.intent.embedder import LLMEmbedder
+from src.app_helper import get_agent_config
+from src.core.intentional_agent import IntentionalAgent
+from src.kg.adapter_neo4j import build_neo4j_adapter
+from src.llm.client import LLMClient
+from src.core.intent.embedder import LLMEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -367,7 +367,7 @@ def test_plan_intention_with_expo_domain_profile():
         _seed_min_actions_if_needed(kg, embedder=embedder, dims=dims)
         _assert_seed_ready_and_vector_query_works(kg, dims=dims)
         # A) In-domain
-        from core.intentional_agent import DomainProfile
+        from src.core.intentional_agent import DomainProfile
 
         expo_profile = DomainProfile(
             name="expo",

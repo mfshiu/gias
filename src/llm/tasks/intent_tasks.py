@@ -79,7 +79,7 @@ def main() -> None:
     test_input = "先去 A1 倉庫領取測試樣品並送往 301 會議室，接著在下午兩點準時為 VIP 客戶進行產品演示，演示包含投影控制與樣品解說，完成後引導客戶前往 1 樓出口並發送滿意度調查。"
 
     # ✅ 改為：完全使用 gias.toml（透過 get_agent_config() 取得 agent_config）
-    from app_helper import get_agent_config
+    from src.app_helper import get_agent_config
 
     agent_config = get_agent_config()
     llm = LLMClient.from_config(agent_config)

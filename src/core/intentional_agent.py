@@ -5,25 +5,25 @@ import json
 from typing import Any
 
 from agentflow.core.agent import Agent
-from llm.client import LLMClient
-from llm.tasks.intent_tasks import parse_intent
-from llm.schemas.intent import IntentCandidate
+from src.llm.client import LLMClient
+from src.llm.tasks.intent_tasks import parse_intent
+from src.llm.schemas.intent import IntentCandidate
 
-from log_helper import init_logging
+from src.log_helper import init_logging
 logger = init_logging()
 
-from kg.action_store import ActionStore
-from kg.adapter_neo4j import Neo4jBoltAdapter
+from src.kg.action_store import ActionStore
+from src.kg.adapter_neo4j import Neo4jBoltAdapter
 
-from core.intent.domain_profile import DomainProfile
-from core.intent.sub_intent import SubIntent
-from core.intent.embedder import LLMEmbedder
-from core.intent.action_matcher import ActionMatcher
-from core.intent.action_selector import ActionSelector
-from core.intent.prompt_builder import PromptBuilder
-from core.intent.llm_decomposer import LLMDecomposer
-from core.intent.planner import RecursivePlanner
-from core.intent.scope_gate import ScopeGate
+from src.core.intent.domain_profile import DomainProfile
+from src.core.intent.sub_intent import SubIntent
+from src.core.intent.embedder import LLMEmbedder
+from src.core.intent.action_matcher import ActionMatcher
+from src.core.intent.action_selector import ActionSelector
+from src.core.intent.prompt_builder import PromptBuilder
+from src.core.intent.llm_decomposer import LLMDecomposer
+from src.core.intent.planner import RecursivePlanner
+from src.core.intent.scope_gate import ScopeGate
 
 
 class IntentionalAgent(Agent):

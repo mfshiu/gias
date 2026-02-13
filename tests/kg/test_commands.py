@@ -1,6 +1,6 @@
 import pytest
 
-from kg import commands as C
+from src.kg import commands as C
 
 
 # -------------------------

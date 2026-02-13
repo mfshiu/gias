@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from core.actions.models import ActionDef, ActionMatch
-from kg.action_store import ActionStore
+from src.core.actions.models import ActionDef, ActionMatch
+from src.kg.action_store import ActionStore
 from .domain_profile import DomainProfile
 from .embedder import LLMEmbedder
 
