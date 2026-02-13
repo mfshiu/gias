@@ -64,5 +64,5 @@ class ActionSelector:
                     action_map[name] = match
 
         prompt_actions = self._to_prompt_format(list(action_map.values()))
-        self.logger.info(f"prompt_actions: {prompt_actions}")
+        self.logger.debug(f"prompt_actions: {prompt_actions}")
         return prompt_actions
