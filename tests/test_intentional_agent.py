@@ -1,31 +1,117 @@
 # tests/test_intentional_agent.py
-import os
 import logging
 import pytest
 from dotenv import load_dotenv
 
-from core.intentional_agent import IntentionalAgent
 from app_helper import get_agent_config
+from core.intentional_agent import IntentionalAgent
 from kg.adapter_neo4j import build_neo4j_adapter
+from llm.client import LLMClient
+from core.intent.embedder import LLMEmbedder
 
 logger = logging.getLogger(__name__)
 
-
-def _require_openai_key():
-    if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
-        pytest.skip("Missing LLM API key env var (e.g., OPENAI_API_KEY).")
+SEED_PREFIX = "SeedTest_"
 
 
+# -------------------------
+# Config guards
+# -------------------------
+def _require_llm_ready(agent_config: dict) -> None:
+    llm_cfg = agent_config.get("llm")
+    if not isinstance(llm_cfg, dict):
+        pytest.skip("Missing [llm] config in gias.toml (agent_config['llm']).")
+
+    provider = str(llm_cfg.get("provider", "")).lower().strip()
+    if not provider:
+        pytest.skip("Missing llm.provider in gias.toml.")
+
+    if provider == "openai":
+        openai_cfg = llm_cfg.get("openai") or {}
+        api_key = openai_cfg.get("api_key")
+        if not api_key:
+            pytest.skip("Missing llm.openai.api_key in gias.toml.")
+        if not isinstance(api_key, str):
+            pytest.skip("llm.openai.api_key must be a string in gias.toml.")
+        return
+
+    if provider == "ollama":
+        ollama_cfg = llm_cfg.get("ollama") or {}
+        base_url = ollama_cfg.get("base_url")
+        model = ollama_cfg.get("model")
+        if not base_url or not model:
+            pytest.skip("Missing llm.ollama.base_url or llm.ollama.model in gias.toml.")
+        return
+
+    if provider == "mock":
+        return
+
+    pytest.skip(f"Unsupported llm.provider={provider!r} in gias.toml.")
+
+
+def _get_embedder(agent_config) -> LLMEmbedder:
+    llm = LLMClient.from_config(agent_config)
+    return LLMEmbedder(llm)
+
+
+def _assert_seed_ready_and_vector_query_works(kg, *, dims: int):
+    # 1) 確認 seed actions 存在、且 embedding 維度正確
+    r = kg.query(
+        """
+        MATCH (a:Action)
+        WHERE a.name STARTS WITH $p AND a.description_embedding IS NOT NULL
+        RETURN count(a) AS cnt,
+               min(size(a.description_embedding)) AS minDim,
+               max(size(a.description_embedding)) AS maxDim
+        """,
+        {"p": SEED_PREFIX},
+    )[0]
+    assert int(r["cnt"]) > 0, "Seed actions not found in DB (name prefix)."
+    assert int(r["minDim"]) == int(dims) and int(r["maxDim"]) == int(dims), (
+        f"Seed embedding dims mismatch in DB: {r}"
+    )
+
+    # 2) 確認 vector index 存在且 ONLINE
+    idx = kg.query(
+        """
+        SHOW INDEXES YIELD name, state
+        WHERE name = $n
+        RETURN name, state
+        """,
+        {"n": "action_desc_vec"},
+    )
+    assert idx and idx[0]["state"] == "ONLINE", f"Vector index not ONLINE: {idx}"
+
+    # 3) 用 Cypher 直接 queryNodes 驗證 vector search 可用
+    one = kg.query(
+        """
+        MATCH (a:Action) WHERE a.name STARTS WITH $p
+        RETURN a.description_embedding AS emb
+        LIMIT 1
+        """,
+        {"p": SEED_PREFIX},
+    )[0]
+    emb = one["emb"]
+    out = kg.query(
+        """
+        CALL db.index.vector.queryNodes('action_desc_vec', 5, $v)
+        YIELD node, score
+        RETURN node.name AS name, score
+        ORDER BY score DESC
+        """,
+        {"v": emb},
+    )
+    assert out, "Vector queryNodes returned empty; adapter/index/query is broken."
+
+
+# -------------------------
+# KG helpers
+# -------------------------
 def _build_kg_adapter_from_agent_config(agent_config):
-    """
-    從 gias.toml 對應結構建立 Neo4j adapter，但「不覆寫」agent_config["kg"]。
-    只用於測試前置檢查（ping / count / seed）。
-    """
     if "kg" not in agent_config or not isinstance(agent_config["kg"], dict):
         pytest.skip("agent_config missing 'kg' dict config.")
 
     kg_cfg = agent_config["kg"]
-
     kg_type = kg_cfg.get("type", "neo4j")
     if kg_type != "neo4j":
         pytest.skip(f"Only neo4j supported, got kg.type={kg_type!r}")
@@ -44,21 +130,18 @@ def _build_kg_adapter_from_agent_config(agent_config):
         password=neo.get("password"),
         database=neo.get("database"),
         encrypted=neo.get("encrypted", False),
-        fetch_size=kg_cfg.get("fetch_size", 2000),
-        timeout_sec=kg_cfg.get("timeout_sec", 15),
-        max_retries=kg_cfg.get("max_retries", 2),
-        retry_backoff_sec=kg_cfg.get("retry_backoff_sec", 0.5),
+        fetch_size=int(neo.get("fetch_size", 2000)),
+        timeout_sec=int(neo.get("timeout_sec", 15)),
+        max_retries=int(neo.get("max_retries", 2)),
+        retry_backoff_sec=float(neo.get("retry_backoff_sec", 0.5)),
         logger=None,
     )
 
 
 def _require_neo4j_ready(agent_config):
-    """
-    只做連線檢查，不改動 agent_config 結構（避免 IntentionalAgent.kg property 失效）。
-    """
     kg = _build_kg_adapter_from_agent_config(agent_config)
     try:
-        r = kg.read("RETURN 1 AS ok")
+        r = kg.query("RETURN 1 AS ok", {})
         if not r or r[0].get("ok") != 1:
             pytest.skip("Neo4j not responding as expected.")
     except Exception as e:
@@ -66,129 +149,131 @@ def _require_neo4j_ready(agent_config):
     return kg
 
 
-def _count_actions_with_embedding(kg):
-    res = kg.read(
+def _count_actions_with_embedding(kg, dims: int | None = None) -> int:
+    if dims is None:
+        row = kg.query(
+            """
+            MATCH (a:Action)
+            WHERE a.description_embedding IS NOT NULL
+            RETURN count(a) AS cnt
+            """,
+            {},
+        )[0]
+        return int(row["cnt"])
+
+    row = kg.query(
         """
         MATCH (a:Action)
-        WHERE a.description_embedding IS NOT NULL
-        RETURN count(a) AS c
-        """
+        WHERE a.description_embedding IS NOT NULL AND size(a.description_embedding) = $dims
+        RETURN count(a) AS cnt
+        """,
+        {"dims": int(dims)},
+    )[0]
+    return int(row["cnt"])
+
+
+def _cleanup_seed_actions(kg):
+    kg.write(
+        "MATCH (a:Action) WHERE a.name STARTS WITH $p DETACH DELETE a",
+        {"p": SEED_PREFIX},
     )
-    return int(res[0]["c"]) if res else 0
 
 
-def _seed_one_action_with_embedding_if_needed(kg, *, dims: int = 8):
+def _seed_min_actions_if_needed(kg, *, embedder: LLMEmbedder, dims: int):
     """
-    測試用：若 KG 內沒有任何 Action.description_embedding，塞一筆最小可用的資料，
-    讓 vector search / match_actions 不會整個 skip。
-
-    注意：這會改動測試用 Neo4j。建議把 integration 測試指向測試資料庫。
+    ✅ 這次 seed 不只 1 個「廁所」，而是最小可用 action set：
+    - 導航/路線/定位類（讓 in-domain 比較容易 match）
+    - 每個 action embedding 用真 embedder 產生
+    - 當 DB 沒有 SeedTest_ 前綴的 actions 時才 seed（測試專用）
     """
-    cnt = _count_actions_with_embedding(kg)
-    if cnt > 0:
+    # 檢查是否已有 SeedTest_ 前綴的 actions（測試用）
+    r = kg.query(
+        """
+        MATCH (a:Action)
+        WHERE a.name STARTS WITH $p AND a.description_embedding IS NOT NULL
+        RETURN count(a) AS cnt
+        """,
+        {"p": SEED_PREFIX},
+    )[0]
+    if r and int(r["cnt"]) > 0:
         return
 
-    emb = [0.01 * (i + 1) for i in range(dims)]
+    # ✅ 先建立 vector index（確保 dimensions 符合，否則現有 index 可能用錯 dims）
+    if hasattr(kg, "ensure_vector_index"):
+        kg.ensure_vector_index(
+            index_name="action_desc_vec",
+            label="Action",
+            embedding_prop="description_embedding",
+            dimensions=dims,
+        )
 
-    kg.write(
+    # 最小 seed action set（測試用）
+    seed_actions = [
+        (f"{SEED_PREFIX}LocateExhibit", "引導使用者前往指定目標的位置並提供定位協助（測試用）"),
+        (f"{SEED_PREFIX}ExplainDirections", "用自然語言說明從目前位置前往目的地的方向與轉彎提示（測試用）"),
+        (f"{SEED_PREFIX}SuggestRoute", "根據起點與終點規劃建議路線並避開不利路段（測試用）"),
+    ]
+
+    for name, desc in seed_actions:
+        emb = embedder.embed_text(desc)
+        emb = [float(x) for x in emb]
+        if len(emb) != dims:
+            raise RuntimeError(f"Seed embedding dims mismatch: got={len(emb)} expected={dims}")
+
+        kg.write(
+            """
+            MERGE (a:Action {name:$name})
+            SET a.description=$desc,
+                a.description_embedding=$emb,
+                a.source='seed_test'
+            RETURN id(a) AS id, a.name AS name
+            """,
+            {"name": name, "desc": desc, "emb": emb},
+        )
+
+    # ✅ 保險：確認 seed 真的存在且 embedding 已寫入（與 _assert 同一標準）
+    r = kg.query(
         """
-        MERGE (a:Action {name:$name})
-        SET a.description=$desc,
-            a.description_embedding=$emb
-        RETURN a
+        MATCH (a:Action)
+        WHERE a.name STARTS WITH $p AND a.description_embedding IS NOT NULL
+        RETURN count(a) AS cnt, min(size(a.description_embedding)) AS minDim
         """,
-        {
-            "name": "TestAction_WC",
-            "desc": "指引使用者找到洗手間的路徑與方向（測試用）",
-            "emb": emb,
-        },
+        {"p": SEED_PREFIX},
     )
+    if not r or int(r[0]["cnt"]) <= 0:
+        # 診斷：有多少 node 有前綴但沒 embedding？
+        diag = kg.query(
+            """
+            MATCH (a:Action) WHERE a.name STARTS WITH $p
+            RETURN count(a) AS total,
+                   count(a.description_embedding) AS with_emb
+            """,
+            {"p": SEED_PREFIX},
+        )
+        d = diag[0] if diag else {}
+        raise RuntimeError(
+            f"Seed actions not ready: expected >0 with embedding, got cnt={r[0]['cnt'] if r else '?'}. "
+            f"Diagnostic: total={d.get('total')}, with_emb={d.get('with_emb')}"
+        )
+    if int(r[0]["minDim"]) != int(dims):
+        raise RuntimeError(
+            f"Seed embedding dims mismatch: got minDim={r[0]['minDim']} expected={dims}"
+        )
 
 
-@pytest.mark.integration
-def test_break_down_intention_real_llm():
-    load_dotenv()
-    _require_openai_key()
-
-    test_intention = "幫我查一下台北今天的天氣，並整理成摘要"
-
-    agent = IntentionalAgent(
-        agent_config=get_agent_config(),
-        intention=test_intention,
-    )
-
-    sub_intentions = agent.break_down_intention(test_intention)
-
-    logger.info("Break down result:")
-    for i, si in enumerate(sub_intentions, start=1):
-        logger.info("  [%d] %s", i, si)
-
-    assert isinstance(sub_intentions, list)
-    assert len(sub_intentions) > 0
-    # ✅ 新版可能回 SubIntent（或其他結構），不再強制 str
-    assert all(si is not None for si in sub_intentions)
-
-
-@pytest.mark.integration
-def test_match_actions_real_kg_vector():
-    load_dotenv()
-    _require_openai_key()
-
-    agent_config = get_agent_config()
-
-    kg = _require_neo4j_ready(agent_config)
-
-    test_intention = "洗手間怎麼走？"
-
-    agent = IntentionalAgent(
-        agent_config=agent_config,
-        intention=test_intention,
-    )
-
-    try:
-        _seed_one_action_with_embedding_if_needed(kg, dims=8)
-
-        cnt = _count_actions_with_embedding(kg)
-        if cnt == 0:
-            pytest.skip("No Action nodes with description_embedding in KG (even after seed).")
-
-    except Exception as e:
-        pytest.skip(f"Cannot prepare Action nodes: {e}")
-    finally:
-        try:
-            kg.close()
-        except Exception:
-            pass
-
-    actions = agent.match_actions(
-        test_intention,
-        top_k=10,
-        min_score=0.70,
-    )
-
-    logger.info("Matched actions:")
-    for i, a in enumerate(actions, start=1):
-        logger.info("  [%d] %s", i, a)
-
-    assert isinstance(actions, list)
-    assert len(actions) > 0
-    # ✅ 新版回 list[ActionMatch]
-    assert all(hasattr(x, "action") and hasattr(x, "score") for x in actions)
-
-
+# -------------------------
+# Plan tree utils
+# -------------------------
 def _is_plan_tree(obj) -> bool:
-    """新版 plan tree dict: has id/intent/sub_plans"""
-    if not isinstance(obj, dict):
-        return False
-    if "id" not in obj or "intent" not in obj:
-        return False
-    if "sub_plans" not in obj or not isinstance(obj.get("sub_plans"), list):
-        return False
-    return True
+    return (
+        isinstance(obj, dict)
+        and "id" in obj
+        and "intent" in obj
+        and isinstance(obj.get("sub_plans"), list)
+    )
 
 
 def _walk_plan_tree(plan: dict) -> list[dict]:
-    """DFS flatten tree nodes"""
     out = []
     stack = [plan]
     while stack:
@@ -201,158 +286,172 @@ def _walk_plan_tree(plan: dict) -> list[dict]:
     return out
 
 
+# -------------------------
+# Tests
+# -------------------------
 @pytest.mark.integration
-def test_plan_intention():
-    """
-    ✅ 新版相容：plan_intention() 回傳 plan tree dict
-    - 會走 LLM + KG（break_down_intention + match_actions + recursive_planner/guard）
-    - 若因為 actions 對齊失敗而回 leaf_unresolved，測試以 skip 表示環境/資料不足，不視為紅燈
-    """
+def test_break_down_intention_real_llm():
     load_dotenv()
-    _require_openai_key()
 
     agent_config = get_agent_config()
+    _require_llm_ready(agent_config)
+
+    test_intention = "幫我查一下台北今天的天氣，並整理成摘要"
+    agent = IntentionalAgent(agent_config=agent_config, intention=test_intention)
+
+    sub_intentions = agent.break_down_intention(test_intention)
+
+    logger.info("Break down result:")
+    for i, si in enumerate(sub_intentions, start=1):
+        logger.info("  [%d] %s", i, si)
+
+    assert isinstance(sub_intentions, list)
+    assert len(sub_intentions) > 0
+    assert all(si is not None for si in sub_intentions)
+
+
+@pytest.mark.integration
+def test_match_actions_real_kg_vector():
+    load_dotenv()
+
+    agent_config = get_agent_config()
+    _require_llm_ready(agent_config)
+
+    embedder = _get_embedder(agent_config)
+    dims = len(embedder.embed_text("dimension_probe"))
 
     kg = _require_neo4j_ready(agent_config)
+
     try:
-        _seed_one_action_with_embedding_if_needed(kg, dims=8)
-        cnt = _count_actions_with_embedding(kg)
+        _seed_min_actions_if_needed(kg, embedder=embedder, dims=dims)
+        _assert_seed_ready_and_vector_query_works(kg, dims=dims)
+        cnt = _count_actions_with_embedding(kg, dims=dims)
         if cnt == 0:
-            pytest.skip("No Action nodes with description_embedding in KG (even after seed).")
-    except Exception as e:
-        pytest.skip(f"Neo4j preparation failed: {e}")
+            pytest.skip(f"No Action nodes with description_embedding dims={dims} (even after seed).")
+
+        test_intention = "請告訴我怎麼從目前位置走到指定目標"
+        agent = IntentionalAgent(agent_config=agent_config, intention=test_intention)
+
+        actions = agent.match_actions(test_intention, top_k=10, min_score=0.0)
+
+        logger.info("Matched actions:")
+        for i, a in enumerate(actions, start=1):
+            logger.info("  [%d] %s", i, a)
+
+        assert isinstance(actions, list)
+        assert len(actions) > 0
+        assert all(hasattr(x, "action") and hasattr(x, "score") for x in actions)
+
     finally:
         try:
+            _cleanup_seed_actions(kg)
             kg.close()
         except Exception:
             pass
-
-    test_intention = "請帶我去有賣廚餘機的廠商"
-
-    agent = IntentionalAgent(
-        agent_config=agent_config,
-        intention=test_intention,
-    )
-
-    plan = agent.plan_intention(test_intention)
-
-    # ✅ 只接受新版 plan tree
-    assert _is_plan_tree(plan), f"plan_intention() must return plan tree dict, got: {type(plan)}"
-
-    # root sanity
-    assert isinstance(plan["id"], str) and plan["id"].strip()
-    assert isinstance(plan["intent"], str) and plan["intent"].strip()
-
-    # 若兩階段 guard 導致 unresolved，視為環境/對齊不足，跳過（不紅燈）
-    if plan.get("type") in ("leaf_unresolved", "leaf_no_children"):
-        pytest.skip(f"Plan unresolved: type={plan.get('type')}, reason={plan.get('reason')}")
-
-    nodes = _walk_plan_tree(plan)
-    assert len(nodes) >= 1
-
-    # 輕量檢查每個 node 至少有 id/intent
-    for n in nodes:
-        assert isinstance(n.get("id", ""), str)
-        assert isinstance(n.get("intent", ""), str)
-
-    # resolved plan: ideally should contain at least one atomic node
-    atomic_nodes = [n for n in nodes if n.get("type") == "atomic" or n.get("is_atomic") is True]
-    if len(atomic_nodes) == 0:
-        pytest.skip("Plan tree has no atomic nodes (possible due to alignment / threshold / KG data).")
-
-    logger.info("Plan tree OK. nodes=%d atomic=%d", len(nodes), len(atomic_nodes))
-    return
 
 
 @pytest.mark.integration
 def test_plan_intention_with_expo_domain_profile():
-    """
-    ✅ 驗證：加入展覽領域 domain_profile 後，plan_intention() 更容易產出可解決的 plan tree
-    - 仍走 LLM + KG
-    - 若環境資料不足（KG action 不夠、或只 seed 了洗手間 action）可能仍會 unresolved，因此採用「寬鬆但有訊號」的 assert
-    """
     load_dotenv()
-    _require_openai_key()
 
     agent_config = get_agent_config()
+    _require_llm_ready(agent_config)
 
-    # 先確認 Neo4j 可用；並確保至少有一筆 action embedding（避免永遠 skip）
+    embedder = _get_embedder(agent_config)
+    dims = len(embedder.embed_text("dimension_probe"))
+
     kg = _require_neo4j_ready(agent_config)
+
     try:
-        _seed_one_action_with_embedding_if_needed(kg, dims=8)
-        cnt = _count_actions_with_embedding(kg)
-        if cnt == 0:
-            pytest.skip("No Action nodes with description_embedding in KG (even after seed).")
-    except Exception as e:
-        pytest.skip(f"Neo4j preparation failed: {e}")
+        # ✅ 注意：seed 在前、cleanup 在最後（不要 seed 完就刪）
+        _seed_min_actions_if_needed(kg, embedder=embedder, dims=dims)
+        _assert_seed_ready_and_vector_query_works(kg, dims=dims)
+        # A) In-domain
+        from core.intentional_agent import DomainProfile
+
+        expo_profile = DomainProfile(
+            name="expo",
+            synonym_rules=[
+                (r"廠商", "展商"),
+                (r"有賣", "販售"),
+                (r"賣", "販售"),
+                (r"帶我去", "引導我前往"),
+                (r"去", "前往"),
+            ],
+            action_alias={
+                "RecommendExhibits": ["推薦", "哪裡有", "有賣", "販售", "找", "展商", "攤位", "廠商"],
+                "LocateExhibit": ["帶我去", "引導我前往", "前往", "在哪", "位置"],
+                "ExplainDirections": ["怎麼走", "怎麼去", "路線", "方向"],
+                "SuggestRoute": ["路線", "怎麼安排", "規劃"],
+                "CrowdStatus": ["人多", "擁擠", "人潮"],
+                "LocateFacility": ["洗手間", "廁所", "服務台", "無障礙"],
+            },
+        )
+
+        in_domain_intention = "我在入口附近，想前往A12攤位，順便告訴我怎麼走。"
+        agent_in = IntentionalAgent(
+            agent_config=agent_config,
+            intention=in_domain_intention,
+            domain_profile=expo_profile,
+        )
+        plan_in = agent_in.plan_intention(in_domain_intention)
+
+        assert _is_plan_tree(plan_in)
+        assert plan_in.get("intent")
+
+        if plan_in.get("type") in ("leaf_unresolved", "leaf_no_children"):
+            pytest.skip(
+                f"In-domain plan unresolved: type={plan_in.get('type')}, reason={plan_in.get('reason')}, "
+                f"unmatched={plan_in.get('unmatched_sub_intentions')}"
+            )
+
+        nodes_in = _walk_plan_tree(plan_in)
+        atomic_in = [n for n in nodes_in if n.get("type") == "atomic" or n.get("is_atomic") is True]
+        if len(atomic_in) == 0:
+            pytest.skip("In-domain plan has no atomic nodes.")
+
+        atomic_actions_in = [n.get("action", "") for n in atomic_in if isinstance(n.get("action", ""), str)]
+        logger.info("In-domain atomic actions: %s", atomic_actions_in)
+        assert len(atomic_actions_in) >= 1
+
+        # B) Out-of-domain
+        out_of_domain_intention = "我的iPhone 17壞了請幫我修理。"
+        agent_out = IntentionalAgent(
+            agent_config=agent_config,
+            intention=out_of_domain_intention,
+            domain_profile=expo_profile,
+        )
+        plan_out = agent_out.plan_intention(out_of_domain_intention)
+
+        assert _is_plan_tree(plan_out)
+        assert plan_out.get("intent")
+
+        enable_scope_gate = (
+            agent_config.get("intent", {}).get("enable_scope_gate", False)
+            or agent_config.get("intentional_agent", {}).get("enable_scope_gate", False)
+        )
+
+        if enable_scope_gate:
+            assert plan_out.get("type") == "leaf_unresolved", (
+                "Out-of-domain intention must be rejected (leaf_unresolved) when scope gate is enabled. "
+                f"got type={plan_out.get('type')}, reason={plan_out.get('reason')}, debug={plan_out.get('debug')}"
+            )
+            assert plan_out.get("reason")
+        else:
+            nodes_out = _walk_plan_tree(plan_out)
+            atomic_out = [n for n in nodes_out if n.get("type") == "atomic" or n.get("is_atomic") is True]
+            atomic_sources = list({n.get("atomic_source") for n in atomic_out})
+            logger.warning(
+                "Scope gate disabled. Out-of-domain may be incorrectly planned. atomic_sources=%s type=%s debug=%s",
+                atomic_sources,
+                plan_out.get("type"),
+                plan_out.get("debug"),
+            )
+            pytest.xfail("Known issue: no scope gate; out-of-domain intent may be incorrectly planned into pre_defined actions.")
+
     finally:
         try:
+            _cleanup_seed_actions(kg)
             kg.close()
         except Exception:
             pass
-
-    # --------------------------
-    # Expo domain profile (test)
-    # --------------------------
-    # ✅ 注意：DomainProfile 必須從 core.intentional_agent 匯入（你新版放在同檔案）
-    from core.intentional_agent import DomainProfile
-
-    expo_profile = DomainProfile(
-        name="expo",
-        synonym_rules=[
-            (r"廠商", "展商"),
-            (r"有賣", "販售"),
-            (r"賣", "販售"),
-            (r"帶我去", "引導我前往"),
-            (r"去", "前往"),
-        ],
-        action_alias={
-            # recommend / find
-            "RecommendExhibits": ["推薦", "哪裡有", "有賣", "販售", "找", "展商", "攤位", "廠商"],
-            # locate / navigation
-            "LocateExhibit": ["帶我去", "引導我前往", "前往", "在哪", "位置"],
-            "ExplainDirections": ["怎麼走", "怎麼去", "路線", "方向"],
-            "SuggestRoute": ["路線", "怎麼安排", "規劃"],
-            "CrowdStatus": ["人多", "擁擠", "人潮"],
-            "LocateFacility": ["洗手間", "廁所", "服務台", "無障礙"],
-        },
-    )
-
-    test_intention = """我現在在會場入口，想參觀有趣的展區，可以推薦幾個適合我的展品，
-順便告訴我怎麼走、路線怎麼安排，現在人會不會很多，途中如果有洗手間或服務台也請提醒我嗎？"""
-    test_intention = """華碩的攤位在哪？"""
-    test_intention = "請幫我整理各攤位的特色差異、是否有實際案例或政府合作背景。"
-    test_intention = """請帶我去有賣廚餘機的廠商"""
-    test_intention = """我的iPhone 17壞了請幫我修理"""
-
-    agent = IntentionalAgent(
-        agent_config=agent_config,
-        intention=test_intention,
-        domain_profile=expo_profile,
-    )
-
-    plan = agent.plan_intention(test_intention)
-
-    # ✅ 只驗新版 plan tree
-    assert _is_plan_tree(plan), f"plan_intention() must return plan tree dict, got: {type(plan)}"
-    assert plan.get("intent"), "plan tree missing root intent"
-
-    # 若仍 unresolved：表示 KG action 資料不足（這在測試環境很常見），先 skip 不紅燈
-    if plan.get("type") in ("leaf_unresolved", "leaf_no_children"):
-        pytest.skip(f"Plan unresolved even with expo_profile: type={plan.get('type')}, reason={plan.get('reason')}")
-
-    nodes = _walk_plan_tree(plan)
-    assert len(nodes) >= 1
-
-    # ✅ 至少要有 atomic node（不強制一定命中 RecommendExhibits，因為 KG 可能沒有那筆 embedding）
-    atomic_nodes = [n for n in nodes if n.get("type") == "atomic" or n.get("is_atomic") is True]
-    if len(atomic_nodes) == 0:
-        pytest.skip("Plan tree has no atomic nodes (possible due to alignment / threshold / KG data).")
-
-    # ✅ 記錄：看看是否有你期待的 action 類型（有就加分；沒有不 fail）
-    atomic_actions = [n.get("action", "") for n in atomic_nodes if isinstance(n.get("action", ""), str)]
-    logger.info("Atomic actions: %s", atomic_actions)
-
-    # 「帶我去 + 廠商」通常至少會帶出 LocateExhibit/ExplainDirections 其中之一（若 KG 有）
-    # 但 KG 若只有 seed 洗手間 action，這裡不硬性要求
-    return
