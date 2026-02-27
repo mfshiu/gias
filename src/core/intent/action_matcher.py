@@ -338,5 +338,23 @@ class ActionMatcher:
             )
 
         matches.sort(key=lambda m: m.final_score, reverse=True)
-        self.logger.info(f"Matched actions: {len(matches)}")
+
+        # ✅ Fallback: vector 有結果但全被 param gate 拒絕時，重試不 gate（避免 slot 對應不全導致全滅）
+        if (not matches) and rows and use_slots and enable_param_gate:
+            self.logger.debug("All vector matches rejected by param gate; retrying without gate")
+            return self.match_actions(
+                intention,
+                slots=slots,
+                top_k=top_k,
+                min_score=min_score,
+                allow_fallback=allow_fallback,
+                alias_weight=alias_weight,
+                w_base=w_base,
+                w_param=w_param,
+                min_param_score=min_param_score,
+                min_final_score=min_final_score,
+                enable_param_gate=False,
+            )
+
+        self.logger.debug(f"Matched actions: {len(matches)}")
         return matches

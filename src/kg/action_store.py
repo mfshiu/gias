@@ -94,12 +94,12 @@ class ActionStore:
                 need_recreate = True
 
         if need_recreate:
-            # ✅ 加 IF EXISTS，避免不存在就噴錯
-            self.kg.query(f"DROP INDEX {name} IF EXISTS", {})
+            # ✅ 加 IF EXISTS，避免不存在就噴錯；DROP/CREATE 為寫入操作
+            self.kg.query(f"DROP INDEX {name} IF EXISTS", {}, write=True)
             idx = None
 
         if not idx:
-            # ✅ 加 IF NOT EXISTS，避免重跑測試噴錯
+            # ✅ 加 IF NOT EXISTS，避免重跑測試噴錯；CREATE INDEX 為寫入操作
             self.kg.query(
                 f"""
                 CREATE VECTOR INDEX {name} IF NOT EXISTS
@@ -112,6 +112,7 @@ class ActionStore:
                 }}
                 """,
                 {"d": int(dimensions)},
+                write=True,
             )
 
         # ✅ 最關鍵：等 ONLINE
@@ -121,17 +122,18 @@ class ActionStore:
     # Params schema
     # ---------------------------
     def get_action_params(self, action_name: str) -> list[dict]:
+        """取得 Action 的 params schema，相容 seed_actions（p.desc）與 seed_actions_simple（p.description）。"""
         cypher = """
-        MATCH (a:Action {name:$name})-[:HAS_PARAM]->(p:Param)
+        MATCH (a:Action {name:$name})-[r:HAS_PARAM]->(p:Param)
         RETURN
             p.key AS key,
             p.name AS name,
-            p.desc AS desc,
+            coalesce(p.desc, p.description) AS desc,
             p.type AS type,
-            p.required AS required,
+            coalesce(r.required, p.required, false) AS required,
             p.enum AS enum,
             p.example AS example
-        ORDER BY coalesce(p.required,false) DESC, p.key ASC
+        ORDER BY coalesce(r.required, p.required, false) DESC, coalesce(r.order, 999), p.key ASC
         """
         return self.kg.query(cypher, {"name": action_name})
 

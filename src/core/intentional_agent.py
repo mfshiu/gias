@@ -2,6 +2,7 @@
 # IntentionalAgent: An agent that plans and executes actions based on user intentions.
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from agentflow.core.agent import Agent
@@ -24,6 +25,7 @@ from src.core.intent.prompt_builder import PromptBuilder
 from src.core.intent.llm_decomposer import LLMDecomposer
 from src.core.intent.planner import RecursivePlanner
 from src.core.intent.scope_gate import ScopeGate
+from src.agents._executor_utils import resolve_request_topic, build_action_payload
 
 
 class IntentionalAgent(Agent):
@@ -45,7 +47,12 @@ class IntentionalAgent(Agent):
         self.selector = ActionSelector(kg=self.kg, matcher=self.matcher, logger=logger)
         self.prompt_builder = PromptBuilder()
         self.decomposer = LLMDecomposer(llm=self.llm, prompt_builder=self.prompt_builder, logger=logger)
-        self.planner = RecursivePlanner(decomposer=self.decomposer, logger=logger)
+        self.planner = RecursivePlanner(
+            decomposer=self.decomposer,
+            logger=logger,
+            kg=self.kg,
+            action_store=self.action_store,
+        )
         self.scope_gate = ScopeGate(llm=self.llm, logger=logger)
 
         super().__init__("intentional_agent.gias", agent_config)
@@ -69,8 +76,11 @@ class IntentionalAgent(Agent):
         plan = self.plan_intention(self.intention)
         if plan.get("type") == "leaf_unresolved":
             logger.warning("Abort: %s", plan.get("unmatched_sub_intentions"))
+            self._terminate()
             return
-        self.execute_plan(plan)
+        result = self.execute_plan(plan)
+        logger.info("Plan execution finished: ok=%s", result.get("ok", False))
+        self._terminate()
 
 
     def break_down_intention(self, intention: str) -> list[SubIntent]:
@@ -370,9 +380,134 @@ class IntentionalAgent(Agent):
         return plan
 
 
-    def execute_plan(self, plan):
+    def _compute_execution_levels(
+        self, sub_plans: list[dict], execution_logic: list[dict]
+    ) -> list[list[dict]]:
+        """
+        依 execution_logic 計算執行層級（每層可並行）。
+        - Sequence(from_id, to_id): to_id 須在 from_id 完成後執行
+        - Parallel(from_id, to_id): 無依賴，同層可並行
+        回傳 list[list[dict]]：每層為可並行執行的節點清單。
+        """
+        id_to_node = {str(n.get("id", "")): n for n in sub_plans if isinstance(n, dict)}
+        if not id_to_node:
+            return [list(sub_plans)] if sub_plans else []
+
+        deps = {to_id: [] for to_id in id_to_node}
+        for rel in execution_logic or []:
+            if (rel.get("type") or "").strip().lower() == "sequence":
+                from_id = str(rel.get("from_id", ""))
+                to_id = str(rel.get("to_id", ""))
+                if from_id in id_to_node and to_id in id_to_node and from_id != to_id:
+                    deps[to_id].append(from_id)
+
+        levels: list[list[dict]] = []
+        remaining = set(id_to_node.keys())
+        while remaining:
+            ready = [nid for nid in remaining if all(d not in remaining for d in deps[nid])]
+            if not ready:
+                break
+            level = [id_to_node[nid] for nid in sorted(ready)]
+            levels.append(level)
+            for nid in ready:
+                remaining.discard(nid)
+
+        # 未在 levels 中的節點（無 id 或未納入圖）補為第一層
+        seen = {n.get("id") for level in levels for n in level}
+        orphans = [n for n in sub_plans if isinstance(n, dict) and n.get("id") not in seen]
+        if orphans:
+            levels.insert(0, orphans) if levels else levels.append(orphans)
+        return levels if levels else []
+
+    def _compute_execution_order(
+        self, sub_plans: list[dict], execution_logic: list[dict]
+    ) -> list[dict]:
+        """相容用：將 levels 攤平為順序（供測試或 fallback）。"""
+        levels = self._compute_execution_levels(sub_plans, execution_logic)
+        return [n for level in levels for n in level]
+
+    def _execute_atomic_node(self, node: dict[str, Any], *, timeout: int = 30) -> dict[str, Any]:
+        """
+        執行單一 atomic 節點，透過 publish_sync 發送 action 請求至 InfoAgent / NavigationAgent，
+        並等待處理完成後才回傳（block）。
+        """
+        topic = node.get("topic")
+        task = node.get("task") or "Unknown"
+        params = node.get("params") or {}
+        action_id = node.get("action_id")
+        intent = node.get("intent", "")
+
+        topic_name = resolve_request_topic(topic)
+        payload = build_action_payload(task=task, params=params, action_id=action_id, intent=intent)
+
+        try:
+            pcl = self.publish_sync(topic_name, payload, timeout=timeout)
+            resp = getattr(pcl, "content", None) if pcl else None
+            err = getattr(pcl, "error", None) if pcl else None
+            ok = resp.get("ok", False) if isinstance(resp, dict) else (err is None)
+            logger.info("Action completed: task=%s topic=%s ok=%s", task, topic_name, ok)
+            return {
+                "ok": ok,
+                "result": resp if isinstance(resp, dict) else {"response": resp, "error": err},
+            }
+        except TimeoutError as e:
+            logger.warning("Action timeout: task=%s topic=%s err=%s", task, topic_name, e)
+            return {"ok": False, "result": {"payload": payload, "error": str(e)}}
+        except Exception as e:
+            logger.warning("Publish failed: %s", e)
+            return {"ok": False, "result": {"payload": payload, "error": str(e)}}
+
+    def _execute_node(self, node: dict[str, Any]) -> list[dict[str, Any]]:
+        """遞迴執行 plan 節點。atomic 直接執行；composite 依 levels 分層，同層並行執行。"""
+        results: list[dict[str, Any]] = []
+
+        if (node.get("type") == "atomic") or (node.get("is_atomic") is True):
+            r = self._execute_atomic_node(node)
+            results.append({"id": node.get("id"), "intent": node.get("intent"), **r})
+            return results
+
+        sub_plans = node.get("sub_plans") or []
+        execution_logic = node.get("execution_logic") or []
+        levels = self._compute_execution_levels(sub_plans, execution_logic)
+
+        for level in levels:
+            if len(level) == 1:
+                results.extend(self._execute_node(level[0]))
+            else:
+                # 同層多節點：並行執行
+                with ThreadPoolExecutor(max_workers=len(level)) as ex:
+                    futures = [ex.submit(self._execute_node, child) for child in level]
+                    for i, future in enumerate(futures):
+                        try:
+                            results.extend(future.result())
+                        except Exception as e:
+                            child = level[i]
+                            logger.warning("Parallel node failed: id=%s err=%s", child.get("id"), e)
+                            results.append({
+                                "id": child.get("id"),
+                                "intent": child.get("intent"),
+                                "ok": False,
+                                "result": {"error": str(e)},
+                            })
+
+        return results
+
+    def execute_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """
+        依 plan 與 execution_logic 規範執行計畫。
+        - Sequence: from_id 完成後才執行 to_id
+        - Parallel: 無依賴，可並行
+        """
         if plan.get("type") == "leaf_unresolved":
             logger.warning("Plan unresolved, skip execution.")
             return {"ok": False, "message": "抱歉，無法完成此意圖。", "plan": plan}
+
         logger.debug("Starting plan execution.")
-        # TODO
+        results = self._execute_node(plan)
+        all_ok = all(r.get("ok", False) for r in results)
+        return {
+            "ok": all_ok,
+            "message": "執行完成。" if all_ok else "部分執行失敗。",
+            "plan": plan,
+            "results": results,
+        }

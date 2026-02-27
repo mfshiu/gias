@@ -1,7 +1,6 @@
 colorama
 neo4j
 openai
-paho-mqtt
 pydantic
 pytest
 python-dotenv

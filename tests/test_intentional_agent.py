@@ -59,14 +59,14 @@ def _assert_seed_ready_and_vector_query_works(kg, *, dims: int):
     r = kg.query(
         """
         MATCH (a:Action)
-        WHERE a.name STARTS WITH $p AND a.description_embedding IS NOT NULL
+        WHERE a.description_embedding IS NOT NULL
         RETURN count(a) AS cnt,
                min(size(a.description_embedding)) AS minDim,
                max(size(a.description_embedding)) AS maxDim
         """,
-        {"p": SEED_PREFIX},
+        {},
     )[0]
-    assert int(r["cnt"]) > 0, "Seed actions not found in DB (name prefix)."
+    assert int(r["cnt"]) > 0, "No Action nodes with description_embedding in DB."
     assert int(r["minDim"]) == int(dims) and int(r["maxDim"]) == int(dims), (
         f"Seed embedding dims mismatch in DB: {r}"
     )
@@ -85,11 +85,11 @@ def _assert_seed_ready_and_vector_query_works(kg, *, dims: int):
     # 3) 用 Cypher 直接 queryNodes 驗證 vector search 可用
     one = kg.query(
         """
-        MATCH (a:Action) WHERE a.name STARTS WITH $p
+        MATCH (a:Action) WHERE a.description_embedding IS NOT NULL
         RETURN a.description_embedding AS emb
         LIMIT 1
         """,
-        {"p": SEED_PREFIX},
+        {},
     )[0]
     emb = one["emb"]
     out = kg.query(
@@ -181,10 +181,9 @@ def _cleanup_seed_actions(kg):
 
 def _seed_min_actions_if_needed(kg, *, embedder: LLMEmbedder, dims: int):
     """
-    ✅ 這次 seed 不只 1 個「廁所」，而是最小可用 action set：
-    - 導航/路線/定位類（讓 in-domain 比較容易 match）
+    ✅ 最小可用 action set：導航/路線/定位類（讓 in-domain 比較容易 match）
     - 每個 action embedding 用真 embedder 產生
-    - 當 DB 沒有 SeedTest_ 前綴的 actions 時才 seed（測試專用）
+    - 當 DB 沒有 SeedTest_ 前綴的 actions 時才 seed
     """
     # 檢查是否已有 SeedTest_ 前綴的 actions（測試用）
     r = kg.query(
@@ -207,7 +206,7 @@ def _seed_min_actions_if_needed(kg, *, embedder: LLMEmbedder, dims: int):
             dimensions=dims,
         )
 
-    # 最小 seed action set（測試用）
+    # 最小 seed action set（expo_profile.action_alias 需含 SeedTest_ 前綴的 key）
     seed_actions = [
         (f"{SEED_PREFIX}LocateExhibit", "引導使用者前往指定目標的位置並提供定位協助（測試用）"),
         (f"{SEED_PREFIX}ExplainDirections", "用自然語言說明從目前位置前往目的地的方向與轉彎提示（測試用）"),
@@ -241,7 +240,6 @@ def _seed_min_actions_if_needed(kg, *, embedder: LLMEmbedder, dims: int):
         {"p": SEED_PREFIX},
     )
     if not r or int(r[0]["cnt"]) <= 0:
-        # 診斷：有多少 node 有前綴但沒 embedding？
         diag = kg.query(
             """
             MATCH (a:Action) WHERE a.name STARTS WITH $p
@@ -334,9 +332,9 @@ def test_match_actions_real_kg_vector():
 
         actions = agent.match_actions(test_intention, top_k=10, min_score=0.0)
 
-        logger.info("Matched actions:")
+        logger.debug("Matched actions:")
         for i, a in enumerate(actions, start=1):
-            logger.info("  [%d] %s", i, a)
+            logger.verbose("  [%d] %s", i, a)
 
         assert isinstance(actions, list)
         assert len(actions) > 0
@@ -385,6 +383,21 @@ def test_plan_intention_with_expo_domain_profile():
                 "SuggestRoute": ["路線", "怎麼安排", "規劃"],
                 "CrowdStatus": ["人多", "擁擠", "人潮"],
                 "LocateFacility": ["洗手間", "廁所", "服務台", "無障礙"],
+                # 測試 seed 使用 SeedTest_ 前綴，需對應 alias 才能 match
+                f"{SEED_PREFIX}LocateExhibit": ["帶我去", "引導我前往", "前往", "在哪", "位置"],
+                f"{SEED_PREFIX}ExplainDirections": ["怎麼走", "怎麼去", "路線", "方向"],
+                f"{SEED_PREFIX}SuggestRoute": ["路線", "怎麼安排", "規劃"],
+            },
+            # LLM slot 鍵可能與 action param 不同，需對應才能通過 param gate
+            slot_map={
+                "target_name": ["destination", "target", "目標", "target_name", "終點"],
+                "target_type": ["類型", "目標類型", "type"],
+                "current_location": ["location", "目前位置", "起點", "current_location", "出發點"],
+                "destination": ["target", "目標", "target_name", "終點"],
+            },
+            enum_alias={
+                "target_type": {"攤位": "booth", "展區": "exhibit_zone", "展品": "exhibit"},
+                "facility_type": {"廁所": "restroom", "洗手間": "restroom", "出口": "exit", "服務台": "service_desk", "無障礙": "accessible"},
             },
         )
 
@@ -437,6 +450,24 @@ def test_plan_intention_with_expo_domain_profile():
                 f"got type={plan_out.get('type')}, reason={plan_out.get('reason')}, debug={plan_out.get('debug')}"
             )
             assert plan_out.get("reason")
+
+            # 區分「找不到 action」vs「scope gate 拒絕」：
+            # - 找不到 action：unmatched_sub_intentions 非空，reason 含 "matched" 或 "no allowed"
+            # - scope gate 拒絕：unmatched_sub_intentions 為空（matcher 有找到，但 gate 判斷意圖超出範圍）
+            #   reason 由 LLM 產生，可能為 "Scope gate rejected." 或描述性文字如 "There are no actions available..."
+            unmatched = plan_out.get("unmatched_sub_intentions", [])
+            reason = plan_out.get("reason", "")
+            if unmatched:
+                # 確實無法找到 action（match_actions 對部分子意圖無匹配）
+                assert "matched" in reason.lower() or "no allowed" in reason.lower(), (
+                    f"Expected 'matched' or 'no allowed' in reason when unmatched_sub_intentions={unmatched}. "
+                    f"got reason={reason}"
+                )
+                logger.info("Out-of-domain: no action found for sub-intentions %s", unmatched)
+            else:
+                # scope gate 拒絕：reason 由 LLM 產生，可能含 "scope gate"、"no actions"、"not available" 等
+                assert reason, "Scope gate path must have non-empty reason."
+                logger.info("Out-of-domain: scope gate rejected. reason=%s", reason)
         else:
             nodes_out = _walk_plan_tree(plan_out)
             atomic_out = [n for n in nodes_out if n.get("type") == "atomic" or n.get("is_atomic") is True]
