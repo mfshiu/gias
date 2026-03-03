@@ -331,3 +331,196 @@ ORDER BY a.name
 | REQUESTS   | Action → Topic | 請求用的 Topic |
 | RESPONDS   | Action → Topic | 回應用的 Topic |
 | HAS_SCHEMA | Topic → MessageSchema | Topic 的訊息 Schema |
+
+---
+
+# Blackboard 圖譜查詢
+
+Blackboard 儲存展場即時脈絡（Zones、POI、Booth、Agent 狀態與位置、Task 等），詳見 `tests/seed_blackboard/seed_blackboard.py`。
+
+---
+
+## 圖形版查詢（Neo4j Browser 可畫圖）
+
+### B-G1. 所有節點與關係（小規模時使用）
+
+```cypher
+MATCH (n)
+OPTIONAL MATCH (n)-[r]->(m)
+RETURN n, r, m
+LIMIT 300
+```
+
+### B-G2. Zones、POI、Booth 與其位置關係
+
+```cypher
+MATCH (loc)-[r:LOCATED_IN]->(z:Zone)
+RETURN loc, r, z
+```
+
+### B-G3. POI/Booth 之間的連接路徑
+
+```cypher
+MATCH (a)-[r:CONNECTED_TO]->(b)
+RETURN a, r, b
+```
+
+### B-G4. Agent 與其 Skill
+
+```cypher
+MATCH (ag:Agent)-[r:HAS_SKILL]->(sk:Skill)
+RETURN ag, r, sk
+```
+
+### B-G5. Agent 的目前位置與狀態
+
+```cypher
+MATCH (ag:Agent)
+OPTIONAL MATCH (ag)-[rp:CURRENT_POSITION]->(pos)
+OPTIONAL MATCH (ag)-[rs:CURRENT_STATE]->(st:State)
+RETURN ag, rp, pos, rs, st
+```
+
+### B-G6. Zone 的人潮狀態
+
+```cypher
+MATCH (z:Zone)-[r:CURRENT_STATE]->(st:State)
+RETURN z, r, st
+```
+
+### B-G7. Task 與其相關節點（起點、終點、狀態、技能）
+
+```cypher
+MATCH (t:Task)
+OPTIONAL MATCH (t)-[r1:START_LOCATION]->(start)
+OPTIONAL MATCH (t)-[r2:TARGET_LOCATION]->(target)
+OPTIONAL MATCH (t)-[r3:HAS_STATUS]->(st:State)
+OPTIONAL MATCH (t)-[r4:REQUIRES_SKILL]->(sk:Skill)
+RETURN t, r1, start, r2, target, r3, st, r4, sk
+```
+
+---
+
+## 表格版查詢（欄位輸出）
+
+### B1. 列出所有 Zone
+
+```cypher
+MATCH (z:Zone)
+RETURN z.name AS zone_name
+ORDER BY z.name
+```
+
+### B2. 列出所有 POI
+
+```cypher
+MATCH (p:POI)
+RETURN p.id AS id, p.name AS name
+ORDER BY p.id
+```
+
+### B3. 列出所有 Booth
+
+```cypher
+MATCH (b:Booth)
+RETURN b.id AS id, b.exhibitor AS exhibitor
+ORDER BY b.id
+```
+
+### B4. POI/Booth 屬於哪個 Zone
+
+```cypher
+MATCH (loc)-[:LOCATED_IN]->(z:Zone)
+RETURN labels(loc)[0] AS type, loc.id AS id, coalesce(loc.name, loc.exhibitor) AS name, z.name AS zone
+ORDER BY zone, type, id
+```
+
+### B5. 連接路徑（距離）
+
+```cypher
+MATCH (a)-[r:CONNECTED_TO]->(b)
+WHERE id(a) < id(b)
+RETURN a.id AS from_id, b.id AS to_id, r.distance AS distance
+ORDER BY from_id, to_id
+```
+
+### B6. 所有 Agent
+
+```cypher
+MATCH (ag:Agent)
+RETURN ag.agent_id AS agent_id, ag.type AS type
+ORDER BY ag.agent_id
+```
+
+### B7. Agent 擁有的 Skill
+
+```cypher
+MATCH (ag:Agent)-[:HAS_SKILL]->(sk:Skill)
+RETURN ag.agent_id AS agent_id, sk.name AS skill
+ORDER BY agent_id
+```
+
+### B8. Agent 目前位置與狀態
+
+```cypher
+MATCH (ag:Agent)
+OPTIONAL MATCH (ag)-[:CURRENT_POSITION]->(pos)
+OPTIONAL MATCH (ag)-[:CURRENT_STATE]->(st:State)
+RETURN ag.agent_id AS agent_id,
+       coalesce(pos.id, pos.name) AS position,
+       st.status_name AS status
+ORDER BY agent_id
+```
+
+### B9. Zone 人潮狀態
+
+```cypher
+MATCH (z:Zone)
+OPTIONAL MATCH (z)-[:CURRENT_STATE]->(st:State)
+RETURN z.name AS zone, st.status_name AS crowd_status
+ORDER BY zone
+```
+
+### B10. 所有 Task
+
+```cypher
+MATCH (t:Task)
+OPTIONAL MATCH (t)-[:HAS_STATUS]->(st:State)
+OPTIONAL MATCH (t)-[:START_LOCATION]->(start)
+OPTIONAL MATCH (t)-[:TARGET_LOCATION]->(target)
+OPTIONAL MATCH (t)-[:REQUIRES_SKILL]->(sk:Skill)
+RETURN t.task_id AS task_id,
+       t.type AS type,
+       t.priority AS priority,
+       st.status_name AS status,
+       start.id AS start_id,
+       target.id AS target_id,
+       sk.name AS required_skill
+ORDER BY task_id
+```
+
+---
+
+## Blackboard 節點與關係速查
+
+| 節點 Label | 常用屬性 |
+|------------|----------|
+| Zone | name |
+| POI | id, name |
+| Booth | id, exhibitor |
+| Agent | agent_id, type |
+| Skill | name |
+| State | status_name |
+| Task | task_id, type, priority |
+
+| 關係類型 | 方向 | 說明 |
+|----------|------|------|
+| LOCATED_IN | POI/Booth → Zone | 位於哪個區域 |
+| CONNECTED_TO | POI/Booth ↔ POI/Booth | 連接路徑（有 distance） |
+| HAS_SKILL | Agent → Skill | Agent 擁有的能力 |
+| CURRENT_POSITION | Agent → POI/Booth | Agent 目前位置 |
+| CURRENT_STATE | Agent/Zone → State | 目前狀態 |
+| HAS_STATUS | Task → State | 任務狀態 |
+| REQUIRES_SKILL | Task → Skill | 任務所需能力 |
+| START_LOCATION | Task → POI/Booth | 任務起點 |
+| TARGET_LOCATION | Task → POI/Booth | 任務終點 |
