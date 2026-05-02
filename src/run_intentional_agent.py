@@ -48,7 +48,7 @@ EXPO_PROFILE = DomainProfile(
     slot_map={
         "target_name": ["destination", "target", "目標", "target_name", "終點"],
         "target_type": ["類型", "目標類型", "type"],
-        "current_location": ["location", "目前位置", "起點", "current_location", "出發點"],
+        "current_location": ["location", "目前位置", "起點", "current_location", "出發點", "入口"],
         "destination": ["target", "目標", "target_name", "終點"],
     },
     enum_alias={

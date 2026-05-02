@@ -1,0 +1,1542 @@
+{
+  "group": "multi_step",
+  "ratios": [
+    0.3,
+    0.6
+  ],
+  "n_cases": 20,
+  "midway_inject": true,
+  "seed": 42,
+  "elapsed_sec": 470.89,
+  "results": [
+    {
+      "case_id": "MS-01",
+      "group": "multi_step",
+      "intention": "先帶我去機器人展區，再去AI 展區，並且避開封閉區域。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "CrowdStatus",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_VR1->P_Cafe",
+          "detail": {
+            "a": "B_VR1",
+            "b": "P_Cafe",
+            "distance": 10,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-02",
+      "group": "multi_step",
+      "intention": "先帶我去遊戲展區，再去VR 展區，並且避開封閉區域。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 110.0,
+      "path_length_m": 110.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "VR_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "CrowdStatus",
+        "LocateExhibit"
+      ],
+      "initial_events": [],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-03",
+      "group": "multi_step",
+      "intention": "先帶我去AI 展區，再去遊戲展區，並且避開封閉區域。",
+      "ratio": 0.3,
+      "success": false,
+      "plan_executable": false,
+      "intention_satisfied": false,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 0.0,
+      "path_length_m": 0.0,
+      "visited_zones": [],
+      "plan_atomic_actions": [],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        },
+        {
+          "kind": "area_closure",
+          "target": "Robotics_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "There is no available action to specifically avoid closed or restricted areas while guiding the user.",
+      "error": ""
+    },
+    {
+      "case_id": "MS-04",
+      "group": "multi_step",
+      "intention": "先帶我去VR 展區，再去機器人展區，並且避開封閉區域。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 140.0,
+      "path_length_m": 140.0,
+      "visited_zones": [
+        "VR_Area",
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-05",
+      "group": "multi_step",
+      "intention": "先帶我去遊戲展區，再去AI 展區，並且避開封閉區域。",
+      "ratio": 0.3,
+      "success": false,
+      "plan_executable": false,
+      "intention_satisfied": false,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 0.0,
+      "path_length_m": 0.0,
+      "visited_zones": [],
+      "plan_atomic_actions": [],
+      "initial_events": [],
+      "midway_events": [],
+      "plan_unresolved_reason": "The available actions include guiding visitors to specified exhibits and explaining exhibits, but there is no action to explicitly avoid closed or restricted areas during navigation.",
+      "error": ""
+    },
+    {
+      "case_id": "MS-06",
+      "group": "multi_step",
+      "intention": "我想先參觀機器人展區，接著去AI 展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM1->B_GM2",
+          "detail": {
+            "a": "B_GM1",
+            "b": "B_GM2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-07",
+      "group": "multi_step",
+      "intention": "我想先參觀遊戲展區，接著去VR 展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 110.0,
+      "path_length_m": 110.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "VR_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "AI_Tech_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-08",
+      "group": "multi_step",
+      "intention": "我想先參觀AI 展區，接著去遊戲展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 150.0,
+      "path_length_m": 150.0,
+      "visited_zones": [
+        "AI_Tech_Area",
+        "Gaming_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM1->B_GM2",
+          "detail": {
+            "a": "B_GM1",
+            "b": "B_GM2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-09",
+      "group": "multi_step",
+      "intention": "我想先參觀VR 展區，接著去機器人展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 140.0,
+      "path_length_m": 140.0,
+      "visited_zones": [
+        "VR_Area",
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Info->B_AI1",
+          "detail": {
+            "a": "P_Info",
+            "b": "B_AI1",
+            "distance": 25,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-10",
+      "group": "multi_step",
+      "intention": "我想先參觀遊戲展區，接著去AI 展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 200.0,
+      "path_length_m": 200.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Info->B_GM1",
+          "detail": {
+            "a": "P_Info",
+            "b": "B_GM1",
+            "distance": 35,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-11",
+      "group": "multi_step",
+      "intention": "請先去機器人展區然後去AI 展區，避免擁擠和封閉的區域。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-12",
+      "group": "multi_step",
+      "intention": "請先去遊戲展區然後去VR 展區，避免擁擠和封閉的區域。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 150.0,
+      "path_length_m": 150.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "VR_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM1->B_GM2",
+          "detail": {
+            "a": "B_GM1",
+            "b": "B_GM2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM1->B_GM2",
+          "detail": {
+            "a": "B_GM1",
+            "b": "B_GM2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-13",
+      "group": "multi_step",
+      "intention": "請先去AI 展區然後去遊戲展區，避免擁擠和封閉的區域。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 150.0,
+      "path_length_m": 150.0,
+      "visited_zones": [
+        "AI_Tech_Area",
+        "Gaming_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "Robotics_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-14",
+      "group": "multi_step",
+      "intention": "請先去VR 展區然後去機器人展區，避免擁擠和封閉的區域。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 140.0,
+      "path_length_m": 140.0,
+      "visited_zones": [
+        "VR_Area",
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-15",
+      "group": "multi_step",
+      "intention": "請先去遊戲展區然後去AI 展區，避免擁擠和封閉的區域。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 160.0,
+      "path_length_m": 160.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Info->B_RB1",
+          "detail": {
+            "a": "P_Info",
+            "b": "B_RB1",
+            "distance": 30,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-16",
+      "group": "multi_step",
+      "intention": "從入口先到機器人展區再到AI 展區，請規劃最佳路線。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM2->B_VR1",
+          "detail": {
+            "a": "B_GM2",
+            "b": "B_VR1",
+            "distance": 20,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-17",
+      "group": "multi_step",
+      "intention": "從入口先到遊戲展區再到VR 展區，請規劃最佳路線。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 110.0,
+      "path_length_m": 110.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "VR_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_AI1->B_AI2",
+          "detail": {
+            "a": "B_AI1",
+            "b": "B_AI2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-18",
+      "group": "multi_step",
+      "intention": "從入口先到AI 展區再到遊戲展區，請規劃最佳路線。",
+      "ratio": 0.3,
+      "success": false,
+      "plan_executable": true,
+      "intention_satisfied": false,
+      "replan_triggered": 1,
+      "replan_success": 1,
+      "constraint_satisfied": true,
+      "completion_time_sec": 235.0,
+      "path_length_m": 230.0,
+      "visited_zones": [
+        "Gaming_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute",
+        "SuggestRoute"
+      ],
+      "initial_events": [],
+      "midway_events": [
+        {
+          "kind": "area_closure",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-19",
+      "group": "multi_step",
+      "intention": "從入口先到VR 展區再到機器人展區，請規劃最佳路線。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 140.0,
+      "path_length_m": 140.0,
+      "visited_zones": [
+        "VR_Area",
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-20",
+      "group": "multi_step",
+      "intention": "從入口先到遊戲展區再到AI 展區，請規劃最佳路線。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 160.0,
+      "path_length_m": 160.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-01",
+      "group": "multi_step",
+      "intention": "先帶我去機器人展區，再去AI 展區，並且避開封閉區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        },
+        {
+          "kind": "crowd_congestion",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-02",
+      "group": "multi_step",
+      "intention": "先帶我去遊戲展區，再去VR 展區，並且避開封閉區域。",
+      "ratio": 0.6,
+      "success": false,
+      "plan_executable": false,
+      "intention_satisfied": false,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 0.0,
+      "path_length_m": 0.0,
+      "visited_zones": [],
+      "plan_atomic_actions": [],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_AI1->B_RB1",
+          "detail": {
+            "a": "B_AI1",
+            "b": "B_RB1",
+            "distance": 20,
+            "blocked": true
+          }
+        },
+        {
+          "kind": "route_detour",
+          "target": "edge:B_AI1->B_AI2",
+          "detail": {
+            "a": "B_AI1",
+            "b": "B_AI2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "Available actions allow guiding visitors to specified exhibition areas and checking crowd status, but do not provide the ability to identify or avoid closed areas.",
+      "error": ""
+    },
+    {
+      "case_id": "MS-03",
+      "group": "multi_step",
+      "intention": "先帶我去AI 展區，再去遊戲展區，並且避開封閉區域。",
+      "ratio": 0.6,
+      "success": false,
+      "plan_executable": true,
+      "intention_satisfied": false,
+      "replan_triggered": 1,
+      "replan_success": 1,
+      "constraint_satisfied": true,
+      "completion_time_sec": 160.0,
+      "path_length_m": 155.0,
+      "visited_zones": [
+        "Gaming_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "LocateExhibit",
+        "CrowdStatus"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "Exit_Hall",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Info->B_GM1",
+          "detail": {
+            "a": "P_Info",
+            "b": "B_GM1",
+            "distance": 35,
+            "blocked": true
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-04",
+      "group": "multi_step",
+      "intention": "先帶我去VR 展區，再去機器人展區，並且避開封閉區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 140.0,
+      "path_length_m": 140.0,
+      "visited_zones": [
+        "VR_Area",
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "CrowdStatus",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "AI_Tech_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM1->B_GM2",
+          "detail": {
+            "a": "B_GM1",
+            "b": "B_GM2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-05",
+      "group": "multi_step",
+      "intention": "先帶我去遊戲展區，再去AI 展區，並且避開封閉區域。",
+      "ratio": 0.6,
+      "success": false,
+      "plan_executable": false,
+      "intention_satisfied": false,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 0.0,
+      "path_length_m": 0.0,
+      "visited_zones": [],
+      "plan_atomic_actions": [],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        },
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM1->B_GM2",
+          "detail": {
+            "a": "B_GM1",
+            "b": "B_GM2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "The available action 'LocateExhibit' can guide the user to specified exhibit areas, but it does not support the ability to navigate through or avoid closed areas as requested.",
+      "error": ""
+    },
+    {
+      "case_id": "MS-06",
+      "group": "multi_step",
+      "intention": "我想先參觀機器人展區，接著去AI 展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-07",
+      "group": "multi_step",
+      "intention": "我想先參觀遊戲展區，接著去VR 展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 110.0,
+      "path_length_m": 110.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "VR_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "AI_Tech_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-08",
+      "group": "multi_step",
+      "intention": "我想先參觀AI 展區，接著去遊戲展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 170.0,
+      "path_length_m": 170.0,
+      "visited_zones": [
+        "AI_Tech_Area",
+        "Gaming_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "Robotics_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-09",
+      "group": "multi_step",
+      "intention": "我想先參觀VR 展區，接著去機器人展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.6,
+      "success": false,
+      "plan_executable": true,
+      "intention_satisfied": false,
+      "replan_triggered": 1,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 0.0,
+      "path_length_m": 0.0,
+      "visited_zones": [],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM1->B_GM2",
+          "detail": {
+            "a": "B_GM1",
+            "b": "B_GM2",
+            "distance": 15,
+            "blocked": true
+          }
+        },
+        {
+          "kind": "route_detour",
+          "target": "edge:B_RB2->B_VR1",
+          "detail": {
+            "a": "B_RB2",
+            "b": "B_VR1",
+            "distance": 25,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Restroom_N->P_Exit",
+          "detail": {
+            "a": "P_Restroom_N",
+            "b": "P_Exit",
+            "distance": 30,
+            "blocked": true
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-10",
+      "group": "multi_step",
+      "intention": "我想先參觀遊戲展區，接著去AI 展區，幫我規劃路線並避開人潮。",
+      "ratio": 0.6,
+      "success": false,
+      "plan_executable": true,
+      "intention_satisfied": false,
+      "replan_triggered": 1,
+      "replan_success": 1,
+      "constraint_satisfied": true,
+      "completion_time_sec": 190.0,
+      "path_length_m": 185.0,
+      "visited_zones": [
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Info->B_AI1",
+          "detail": {
+            "a": "P_Info",
+            "b": "B_AI1",
+            "distance": 25,
+            "blocked": true
+          }
+        },
+        {
+          "kind": "crowd_congestion",
+          "target": "Exit_Hall",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-11",
+      "group": "multi_step",
+      "intention": "請先去機器人展區然後去AI 展區，避免擁擠和封閉的區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM2->P_Restroom_S",
+          "detail": {
+            "a": "B_GM2",
+            "b": "P_Restroom_S",
+            "distance": 10,
+            "blocked": true
+          }
+        },
+        {
+          "kind": "crowd_congestion",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "area_closure",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-12",
+      "group": "multi_step",
+      "intention": "請先去遊戲展區然後去VR 展區，避免擁擠和封閉的區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 110.0,
+      "path_length_m": 110.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "VR_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "Robotics_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "area_closure",
+          "target": "AI_Tech_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-13",
+      "group": "multi_step",
+      "intention": "請先去AI 展區然後去遊戲展區，避免擁擠和封閉的區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 170.0,
+      "path_length_m": 170.0,
+      "visited_zones": [
+        "AI_Tech_Area",
+        "Gaming_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "CrowdStatus",
+        "CrowdStatus",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        },
+        {
+          "kind": "route_detour",
+          "target": "edge:B_AI1->B_RB1",
+          "detail": {
+            "a": "B_AI1",
+            "b": "B_RB1",
+            "distance": 20,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-14",
+      "group": "multi_step",
+      "intention": "請先去VR 展區然後去機器人展區，避免擁擠和封閉的區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 140.0,
+      "path_length_m": 140.0,
+      "visited_zones": [
+        "VR_Area",
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "CrowdStatus",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "AI_Tech_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "Gaming_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-15",
+      "group": "multi_step",
+      "intention": "請先去遊戲展區然後去AI 展區，避免擁擠和封閉的區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 160.0,
+      "path_length_m": 160.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "CrowdStatus",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "Robotics_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-16",
+      "group": "multi_step",
+      "intention": "從入口先到機器人展區再到AI 展區，請規劃最佳路線。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Cafe->P_Exit",
+          "detail": {
+            "a": "P_Cafe",
+            "b": "P_Exit",
+            "distance": 20,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-17",
+      "group": "multi_step",
+      "intention": "從入口先到遊戲展區再到VR 展區，請規劃最佳路線。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 110.0,
+      "path_length_m": 110.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "VR_Area"
+      ],
+      "plan_atomic_actions": [
+        "SuggestRoute",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "Exit_Hall",
+          "detail": {
+            "new_state": "Closed"
+          }
+        },
+        {
+          "kind": "crowd_congestion",
+          "target": "Exit_Hall",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-18",
+      "group": "multi_step",
+      "intention": "從入口先到AI 展區再到遊戲展區，請規劃最佳路線。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 150.0,
+      "path_length_m": 150.0,
+      "visited_zones": [
+        "AI_Tech_Area",
+        "Gaming_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Info->B_RB1",
+          "detail": {
+            "a": "P_Info",
+            "b": "B_RB1",
+            "distance": 30,
+            "blocked": true
+          }
+        },
+        {
+          "kind": "crowd_congestion",
+          "target": "Exit_Hall",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "VR_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-19",
+      "group": "multi_step",
+      "intention": "從入口先到VR 展區再到機器人展區，請規劃最佳路線。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 140.0,
+      "path_length_m": 140.0,
+      "visited_zones": [
+        "VR_Area",
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "Gaming_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        },
+        {
+          "kind": "area_closure",
+          "target": "Gaming_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-20",
+      "group": "multi_step",
+      "intention": "從入口先到遊戲展區再到AI 展區，請規劃最佳路線。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 180.0,
+      "path_length_m": 180.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "Exit_Hall",
+          "detail": {
+            "new_state": "Closed"
+          }
+        },
+        {
+          "kind": "crowd_congestion",
+          "target": "Robotics_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    }
+  ]
+}

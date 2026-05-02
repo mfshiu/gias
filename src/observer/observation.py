@@ -40,6 +40,8 @@ class ObservationType(Enum):
     DIGITAL = "digital"         # 數位：API、數據、指標
     SYSTEM = "system"           # 系統：內部狀態、異常
     COMPOSITE = "composite"     # 複合：多模態融合
+    PEDESTRIAN_FLOW = "pedestrian_flow"   # 人流與動線：擁擠熱點、周邊訪客密度
+    FACILITY_EVENT = "facility_event"     # 設施與活動：展位狀態、議程、設施
 
 
 @dataclass

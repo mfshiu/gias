@@ -1,0 +1,97 @@
+{
+  "group": "single_goal",
+  "ratios": [
+    0.3
+  ],
+  "n_cases": 2,
+  "midway_inject": true,
+  "seed": 7,
+  "elapsed_sec": 22.2,
+  "results": [
+    {
+      "case_id": "SG-01",
+      "group": "single_goal",
+      "intention": "請帶我去AI 展區。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 60.0,
+      "path_length_m": 60.0,
+      "visited_zones": [
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "area_closure",
+          "target": "Gaming_Area",
+          "detail": {
+            "new_state": "Closed"
+          }
+        },
+        {
+          "kind": "crowd_congestion",
+          "target": "Robotics_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Info->B_GM1",
+          "detail": {
+            "a": "P_Info",
+            "b": "B_GM1",
+            "distance": 35,
+            "blocked": true
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "SG-02",
+      "group": "single_goal",
+      "intention": "請帶我去機器人展區。",
+      "ratio": 0.3,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 40.0,
+      "path_length_m": 40.0,
+      "visited_zones": [
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit"
+      ],
+      "initial_events": [],
+      "midway_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_AI2->P_Restroom_N",
+          "detail": {
+            "a": "B_AI2",
+            "b": "P_Restroom_N",
+            "distance": 10,
+            "blocked": true
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    }
+  ]
+}

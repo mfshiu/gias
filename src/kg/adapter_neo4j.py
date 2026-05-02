@@ -152,6 +152,13 @@ class Neo4jBoltAdapter:
             runner=lambda session: self._run(session, cypher, params or {}, write=True),
         )
 
+    def write_explicit(self, cypher: str, params: Optional[Params] = None) -> List[JsonDict]:
+        """
+        使用 explicit transaction（無 managed retry），避免 retry 時觸發 BufferError。
+        適用於 seed 等一次性操作，連線失敗時直接拋錯不重試。
+        """
+        return self._run_explicit_write(cypher, params or {})
+
     def query(self, cypher: str, params: Optional[Params] = None, *, write: bool = False) -> List[JsonDict]:
         """
         ✅ 兼容介面：ActionStore / Matcher 常用 query()。
@@ -331,6 +338,20 @@ class Neo4jBoltAdapter:
         if write:
             return session.execute_write(_execute)
         return session.execute_read(_execute)
+
+    def _run_explicit_write(self, cypher: str, params: Params) -> List[JsonDict]:
+        """Explicit transaction，無 managed retry，避免 BufferError。"""
+        tx_timeout = float(self.config.timeout_sec)
+
+        with self._driver.session(
+            database=self.config.database,
+            fetch_size=self.config.fetch_size,
+        ) as session:
+            with session.begin_transaction() as tx:
+                result = tx.run(cypher, params, timeout=tx_timeout)
+                rows = [dict(r) for r in result]
+                tx.commit()
+        return rows
 
     def _run_with_retry(
         self,

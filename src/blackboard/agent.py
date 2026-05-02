@@ -243,12 +243,58 @@ class BlackboardAgent(Agent):
             logger.warning("BlackboardAgent query error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    def _apply_observer_updates(self, obs_type: str, entities: list[dict[str, Any]]) -> None:
+        """
+        展場觀察者：將觀察結果同步至 Zone/Booth 等 KG 節點，
+        供行動者代理查詢。
+        """
+        if obs_type == "pedestrian_flow":
+            for e in entities:
+                if e.get("entity_type") == "Zone":
+                    zone_name = e.get("label") or (e.get("entity_id", "").replace("zone_", ""))
+                    crowd_level = (e.get("properties") or {}).get("crowd_level")
+                    if zone_name and crowd_level:
+                        try:
+                            self.kg.write(
+                                """
+                                MATCH (z:Zone {name: $zone_name})
+                                OPTIONAL MATCH (z)-[r:CURRENT_STATE]->()
+                                DELETE r
+                                WITH z
+                                MATCH (st:State {status_name: $crowd_level})
+                                CREATE (z)-[:CURRENT_STATE {updated_at: datetime()}]->(st)
+                                """,
+                                {"zone_name": zone_name, "crowd_level": crowd_level},
+                            )
+                            logger.debug("BlackboardAgent updated Zone %s crowd=%s", zone_name, crowd_level)
+                        except Exception as ex:
+                            logger.warning("BlackboardAgent Zone update failed: %s", ex)
+
+        elif obs_type == "facility_event":
+            for e in entities:
+                if e.get("entity_type") == "Booth":
+                    booth_id = e.get("entity_id")
+                    status = (e.get("properties") or {}).get("status")
+                    if booth_id and status:
+                        try:
+                            self.kg.write(
+                                """
+                                MATCH (b:Booth {id: $booth_id})
+                                SET b.status = $status, b.updated_at = datetime()
+                                """,
+                                {"booth_id": booth_id, "status": status},
+                            )
+                            logger.debug("BlackboardAgent updated Booth %s status=%s", booth_id, status)
+                        except Exception as ex:
+                            logger.warning("BlackboardAgent Booth update failed: %s", ex)
+
     def _handle_observe(self, data: dict[str, Any], observer_id: str) -> dict[str, Any]:
         """
         處理觀察者提交的觀察結果
         
         將觀察結果轉換為 KG 節點/關係並寫入，
         同時發佈對應的變動事件。
+        展場觀察者（pedestrian_flow, facility_event）會同步更新 Zone/Booth。
         """
         observation = data.get("observation")
         if not observation or not isinstance(observation, dict):
@@ -307,6 +353,9 @@ class BlackboardAgent(Agent):
                     "properties": str(entity.get("properties", {})),
                 }
                 self.kg.write(entity_cypher, entity_params)
+
+            # 展場觀察者：同步更新 Zone 人潮、Booth 狀態至 KG
+            self._apply_observer_updates(obs_type, entities)
 
             self.publish_change(
                 topic=f"Observation/{observer_id}/{obs_type}",

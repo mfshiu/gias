@@ -1,0 +1,110 @@
+{
+  "group": "multi_step",
+  "ratios": [
+    0.6
+  ],
+  "n_cases": 2,
+  "midway_inject": true,
+  "seed": 13,
+  "elapsed_sec": 28.45,
+  "results": [
+    {
+      "case_id": "MS-01",
+      "group": "multi_step",
+      "intention": "先帶我去機器人展區，再去AI 展區，並且避開封閉區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 85.0,
+      "path_length_m": 85.0,
+      "visited_zones": [
+        "Robotics_Area",
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:P_Info->B_GM1",
+          "detail": {
+            "a": "P_Info",
+            "b": "B_GM1",
+            "distance": 35,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM1->B_GM2",
+          "detail": {
+            "a": "B_GM1",
+            "b": "B_GM2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "MS-02",
+      "group": "multi_step",
+      "intention": "先帶我去遊戲展區，再去VR 展區，並且避開封閉區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 110.0,
+      "path_length_m": 110.0,
+      "visited_zones": [
+        "Gaming_Area",
+        "VR_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_AI2->P_Restroom_N",
+          "detail": {
+            "a": "B_AI2",
+            "b": "P_Restroom_N",
+            "distance": 10,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_AI1->B_AI2",
+          "detail": {
+            "a": "B_AI1",
+            "b": "B_AI2",
+            "distance": 15,
+            "blocked": true
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    }
+  ]
+}

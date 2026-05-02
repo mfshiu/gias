@@ -1,0 +1,92 @@
+{
+  "group": "constraint_based",
+  "ratios": [
+    0.6
+  ],
+  "n_cases": 2,
+  "midway_inject": true,
+  "seed": 11,
+  "elapsed_sec": 24.77,
+  "results": [
+    {
+      "case_id": "CB-01",
+      "group": "constraint_based",
+      "intention": "請帶我去AI 展區，避開擁擠的區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 60.0,
+      "path_length_m": 60.0,
+      "visited_zones": [
+        "AI_Tech_Area"
+      ],
+      "plan_atomic_actions": [
+        "CrowdStatus",
+        "LocateExhibit"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_VR1->P_Cafe",
+          "detail": {
+            "a": "B_VR1",
+            "b": "P_Cafe",
+            "distance": 10,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [],
+      "plan_unresolved_reason": "",
+      "error": ""
+    },
+    {
+      "case_id": "CB-02",
+      "group": "constraint_based",
+      "intention": "請帶我去機器人展區，避開擁擠的區域。",
+      "ratio": 0.6,
+      "success": true,
+      "plan_executable": true,
+      "intention_satisfied": true,
+      "replan_triggered": 0,
+      "replan_success": 0,
+      "constraint_satisfied": true,
+      "completion_time_sec": 40.0,
+      "path_length_m": 40.0,
+      "visited_zones": [
+        "Robotics_Area"
+      ],
+      "plan_atomic_actions": [
+        "LocateExhibit",
+        "SuggestRoute"
+      ],
+      "initial_events": [
+        {
+          "kind": "route_detour",
+          "target": "edge:B_GM2->B_VR1",
+          "detail": {
+            "a": "B_GM2",
+            "b": "B_VR1",
+            "distance": 20,
+            "blocked": true
+          }
+        }
+      ],
+      "midway_events": [
+        {
+          "kind": "crowd_congestion",
+          "target": "AI_Tech_Area",
+          "detail": {
+            "new_state": "Crowded"
+          }
+        }
+      ],
+      "plan_unresolved_reason": "",
+      "error": ""
+    }
+  ]
+}

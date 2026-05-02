@@ -11,6 +11,8 @@ Observer 模組：感知與轉譯代理
 - VisualObserver: 視覺觀察者
 - AudioObserver: 聽覺觀察者
 - DigitalObserver: 數位觀察者
+- PedestrianFlowObserver: 人流與動線狀態代理
+- FacilityEventObserver: 設施與活動狀態代理
 """
 
 from .observation import (
@@ -24,6 +26,8 @@ from .base import ObserverAgent
 from .visual import VisualObserver
 from .audio import AudioObserver
 from .digital import DigitalObserver
+from .pedestrian_flow import PedestrianFlowObserver
+from .facility_event import FacilityEventObserver
 
 __all__ = [
     "Observation",
@@ -35,4 +39,6 @@ __all__ = [
     "VisualObserver",
     "AudioObserver",
     "DigitalObserver",
+    "PedestrianFlowObserver",
+    "FacilityEventObserver",
 ]

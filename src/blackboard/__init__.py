@@ -15,6 +15,7 @@ from .event import BlackboardEvent, ChangeAction
 from .watcher import BlackboardWatcher
 from .subscription import SubscriptionManager
 from .agent import BlackboardAgent
+from .client import query_blackboard, get_crowd_hotspots, get_open_booths
 
 __all__ = [
     "BlackboardTopic",
@@ -24,4 +25,7 @@ __all__ = [
     "BlackboardWatcher",
     "SubscriptionManager",
     "BlackboardAgent",
+    "query_blackboard",
+    "get_crowd_hotspots",
+    "get_open_booths",
 ]

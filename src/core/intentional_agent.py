@@ -64,11 +64,16 @@ class IntentionalAgent(Agent):
             if kg_cfg.get("type") != "neo4j":
                 raise RuntimeError("KG type is not neo4j")
 
-            # ✅ 注意：你的 toml 結構是 [kg] + [kg.neo4j]，adapter 要吃 kg_cfg["neo4j"]
-            self._kg = Neo4jBoltAdapter.from_config(
-                kg_cfg["neo4j"],
-                logger=logger,
-            )
+            # ActionStore 需查 actions database（seed_actions_simple 寫入處）
+            base = kg_cfg.get("neo4j")
+            actions_overrides = kg_cfg.get("neo4j_actions")
+            if not isinstance(base, dict):
+                raise RuntimeError("Missing [kg.neo4j] config in gias.toml")
+            if not isinstance(actions_overrides, dict):
+                raise RuntimeError("Missing [kg.neo4j_actions] config in gias.toml")
+
+            merged = {**base, **actions_overrides}
+            self._kg = Neo4jBoltAdapter.from_config(merged, logger=logger)
         return self._kg
 
 
@@ -186,142 +191,164 @@ class IntentionalAgent(Agent):
     def plan_intention(self, intention: str) -> dict[str, Any]:
         """
         通用規劃流程（更保守、更能拒絕）：
-        1) LLM 拆解子意圖（subs）
-        2) 對每個 sub-intent 做 action match（含 slots）
-        - 若任何 sub-intent 無可行 action → 直接 leaf_unresolved
-        3) ✅ 新增：Scope Gate（可用 config 開關）
-        - 僅允許「由可用 actions 能力集合」覆蓋的意圖進入 planner
-        - 避免 planner 用 pre_defined 繞過 matcher 產生錯誤可執行計畫
-        4) select_actions + planner.plan
-        5) ✅ 新增：計畫驗證（plan validation）
-        - 若 planner 產生了不在 allowed_actions 內的 atomic action → 視為不可執行（leaf_unresolved）
+        1) LLM 拆解子意圖；對每個 sub-intent 做 action match（含 slots）
+        2) selector 挑選 chosen_actions，建立 allowed_action_names
+        3) Scope Gate（可用 config 開關）：能力集合是否足以完成意圖
+        4) planner 生成 plan
+        5) Plan validation：planner 不可使用 allowed 之外的 atomic action
         """
         norm = self.domain.normalize(intention)
         subs = self.break_down_intention(norm)
 
-        unmatched: list[str] = []
-        matched_pairs: list[tuple[SubIntent, list[ActionMatch]]] = []  # (SubIntent, [ActionMatch...])
-
-        # 1) match per sub-intent (with slots)
-        for s in subs:
-            ms = self.match_actions(s.intent, slots=s.slots)
-            if not ms:
-                unmatched.append(s.intent)
-            else:
-                matched_pairs.append((s, ms))
-
+        # 1) match per sub-intent
+        matched_pairs, unmatched = self._match_subs(subs)
         if unmatched:
-            return {
-                "id": "root",
-                "intent": norm,
-                "depth": 0,
-                "scheduled_start": "N/A",
-                "type": "leaf_unresolved",
-                "reason": "Some sub-intents have no matched actions.",
-                "unmatched_sub_intentions": unmatched,
-                "matched_sub_intentions": [s.intent for s, _ in matched_pairs],
-                "sub_plans": [],
-                "execution_logic": [],
-                "debug": {"sub_intentions": [s.intent for s in subs]},
-            }
+            return self._make_unresolved(
+                intent=norm, subs=subs,
+                reason="Some sub-intents have no matched actions.",
+                unmatched=unmatched,
+                matched=[s.intent for s, _ in matched_pairs],
+            )
 
-        # 2) 依每個 sub-intent 的匹配結果挑選 action
-        #    注意：selector 回傳 dict[str, str]（signature -> description），供 planner/decomposer 使用
+        # 2) selector 挑選 + allowed action 白名單
         chosen_actions = self.selector.select_actions([s for s, _ in matched_pairs])
-
-        # 建立 allowed action 名單（從 selector 的 dict keys 提取 action name）
-        def _action_name_from_sig(sig: str) -> str:
-            s = (sig or "").strip()
-            return s.split("(", 1)[0].strip() if "(" in s else s
-
-        if isinstance(chosen_actions, dict):
-            allowed_action_names = {_action_name_from_sig(k) for k in chosen_actions if k}
-        else:
-            allowed_action_names = {a.name for a in chosen_actions if getattr(a, "name", None)}
+        allowed_action_names = self._extract_allowed_action_names(chosen_actions)
         if not allowed_action_names:
-            return {
-                "id": "root",
-                "intent": norm,
-                "depth": 0,
-                "scheduled_start": "N/A",
-                "type": "leaf_unresolved",
-                "reason": "No allowed actions selected.",
-                "unmatched_sub_intentions": [],
-                "matched_sub_intentions": [s.intent for s, _ in matched_pairs],
-                "sub_plans": [],
-                "execution_logic": [],
-                "debug": {"sub_intentions": [s.intent for s in subs]},
-            }
+            return self._make_unresolved(
+                intent=norm, subs=subs,
+                reason="No allowed actions selected.",
+                matched=[s.intent for s, _ in matched_pairs],
+            )
 
-        # 3) ✅ Scope Gate（避免 planner 產生 pre_defined 繞過 matcher）
-        enable_scope_gate = bool(
-            self.agent_config.get("intent", {}).get("enable_scope_gate", False)
-            or self.agent_config.get("intentional_agent", {}).get("enable_scope_gate", False)
-        )
-
-        # LLM-based scope gate（通用、不列舉詞彙），需要你在 __init__ 內準備 self.scope_gate（建議）
-        # 若你尚未導入 ScopeGate 類別，也可先把 enable_scope_gate 設 False
-        if enable_scope_gate:
-            try:
-                # 只提供「本次允許的 actions」給 gate 判斷，避免它用整個 action store 亂合理化
-                if isinstance(chosen_actions, dict):
-                    allowed_actions_basic = [
-                        {"name": _action_name_from_sig(k), "description": (v or "")}
-                        for k, v in chosen_actions.items()
-                    ]
-                else:
-                    allowed_actions_basic = [
-                        {"name": a.name, "description": getattr(a, "description", "") or ""}
-                        for a in chosen_actions
-                    ]
-                decision = self.scope_gate.decide(user_intent=norm, available_actions=allowed_actions_basic)
-                if not getattr(decision, "can_execute", False):
-                    return {
-                        "id": "root",
-                        "intent": norm,
-                        "depth": 0,
-                        "scheduled_start": "N/A",
-                        "type": "leaf_unresolved",
-                        "reason": getattr(decision, "reason", "") or "Scope gate rejected.",
-                        "unmatched_sub_intentions": [],
-                        "matched_sub_intentions": [s.intent for s in subs],
-                        "sub_plans": [],
-                        "execution_logic": [],
-                        "debug": {
-                            "sub_intentions": [s.intent for s in subs],
-                            "scope_gate": {"can_execute": False, "reason": getattr(decision, "reason", "")},
-                            "allowed_actions": sorted(list(allowed_action_names)),
-                        },
-                    }
-            except Exception as e:
-                # gate 失敗時的策略：
-                # - 若你想更保守：直接拒絕（推薦在測試/嚴格模式）
-                # - 若你想更寬鬆：放行（但會增加錯誤規劃風險）
-                strict = bool(self.agent_config.get("intent", {}).get("scope_gate_strict", True))
-                logger.warning("Scope gate error: %s", e)
-                if strict:
-                    return {
-                        "id": "root",
-                        "intent": norm,
-                        "depth": 0,
-                        "scheduled_start": "N/A",
-                        "type": "leaf_unresolved",
-                        "reason": f"Scope gate failed: {e}",
-                        "unmatched_sub_intentions": [],
-                        "matched_sub_intentions": [s.intent for s in subs],
-                        "sub_plans": [],
-                        "execution_logic": [],
-                        "debug": {
-                            "sub_intentions": [s.intent for s in subs],
-                            "scope_gate": {"error": str(e)},
-                            "allowed_actions": sorted(list(allowed_action_names)),
-                        },
-                    }
+        # 3) Scope Gate
+        gate_reject = self._run_scope_gate(norm, subs, chosen_actions, allowed_action_names)
+        if gate_reject is not None:
+            return gate_reject
 
         # 4) planner 生成 plan
         plan = self.planner.plan(norm, chosen_actions)
 
-        # 5) ✅ Plan validation：若 planner 產生了未被允許的 atomic action → 拒絕
+        # 5) Plan validation
+        illegal_atoms = self._find_illegal_atomic_actions(plan, allowed_action_names)
+        if illegal_atoms:
+            return self._make_unresolved(
+                intent=norm, subs=subs,
+                reason="Planner produced actions outside allowed set.",
+                matched=[s.intent for s in subs],
+                extra_debug={
+                    "allowed_actions": sorted(allowed_action_names),
+                    "illegal_atomic_nodes": illegal_atoms,
+                },
+            )
+
+        plan.setdefault("debug", {})
+        plan["debug"]["sub_intentions"] = [s.intent for s in subs]
+        plan["debug"]["allowed_actions"] = sorted(allowed_action_names)
+        logger.debug(f"Generated plan: {json.dumps(plan, indent=2, ensure_ascii=False)}")
+        return plan
+
+    # ------------------------------------------------------------------
+    # plan_intention helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _action_name_from_sig(sig: str) -> str:
+        """從 'ActionName(Param1, ...)' 取出 'ActionName'；非簽章字串原樣回傳。"""
+        s = (sig or "").strip()
+        return s.split("(", 1)[0].strip() if "(" in s else s
+
+    def _match_subs(
+        self, subs: list[SubIntent]
+    ) -> tuple[list[tuple[SubIntent, list[Any]]], list[str]]:
+        """對每個 sub-intent 做 action match（帶 slots），回傳 (matched_pairs, unmatched_intents)。"""
+        matched_pairs: list[tuple[SubIntent, list[Any]]] = []
+        unmatched: list[str] = []
+        for s in subs:
+            ms = self.match_actions(s.intent, slots=s.slots)
+            if ms:
+                matched_pairs.append((s, ms))
+            else:
+                unmatched.append(s.intent)
+        return matched_pairs, unmatched
+
+    def _extract_allowed_action_names(self, chosen_actions: Any) -> set[str]:
+        """從 selector 的輸出（dict 或 list[ActionDef]）擷取 action 名稱白名單。"""
+        if isinstance(chosen_actions, dict):
+            return {self._action_name_from_sig(k) for k in chosen_actions if k}
+        return {a.name for a in chosen_actions if getattr(a, "name", None)}
+
+    def _to_basic_actions(self, chosen_actions: Any) -> list[dict[str, str]]:
+        """把 chosen_actions 轉成 ScopeGate 可吃的 [{name, description}, ...]。"""
+        if isinstance(chosen_actions, dict):
+            return [
+                {"name": self._action_name_from_sig(k), "description": (v or "")}
+                for k, v in chosen_actions.items()
+            ]
+        return [
+            {"name": a.name, "description": getattr(a, "description", "") or ""}
+            for a in chosen_actions
+        ]
+
+    def _scope_gate_enabled(self) -> bool:
+        cfg = self.agent_config
+        return bool(
+            cfg.get("intent", {}).get("enable_scope_gate", False)
+            or cfg.get("intentional_agent", {}).get("enable_scope_gate", False)
+        )
+
+    def _run_scope_gate(
+        self,
+        norm: str,
+        subs: list[SubIntent],
+        chosen_actions: Any,
+        allowed_action_names: set[str],
+    ) -> dict[str, Any] | None:
+        """執行 Scope Gate；通過或停用時回傳 None，被擋下時回傳 leaf_unresolved dict。"""
+        if not self._scope_gate_enabled():
+            return None
+
+        try:
+            decision = self.scope_gate.decide(
+                user_intent=norm,
+                available_actions=self._to_basic_actions(chosen_actions),
+            )
+        except Exception as e:
+            # 嚴格模式拒絕，否則放行（但仍記 log）
+            logger.warning("Scope gate error: %s", e)
+            if not bool(self.agent_config.get("intent", {}).get("scope_gate_strict", True)):
+                return None
+            return self._make_unresolved(
+                intent=norm, subs=subs,
+                reason=f"Scope gate failed: {e}",
+                matched=[s.intent for s in subs],
+                extra_debug={
+                    "scope_gate": {"error": str(e)},
+                    "allowed_actions": sorted(allowed_action_names),
+                },
+            )
+
+        if getattr(decision, "can_execute", False):
+            return None
+
+        return self._make_unresolved(
+            intent=norm, subs=subs,
+            reason=getattr(decision, "reason", "") or "Scope gate rejected.",
+            matched=[s.intent for s in subs],
+            extra_debug={
+                "scope_gate": {
+                    "can_execute": False,
+                    "reason": getattr(decision, "reason", ""),
+                },
+                "allowed_actions": sorted(allowed_action_names),
+            },
+        )
+
+    def _find_illegal_atomic_actions(
+        self, plan: dict[str, Any], allowed_action_names: set[str]
+    ) -> list[dict[str, Any]]:
+        """走訪 plan 樹找出不在 allowed 集合內的 atomic action 節點。"""
+        if not isinstance(plan, dict):
+            return []
+
         def _walk(node: dict[str, Any]) -> list[dict[str, Any]]:
             out = [node]
             for ch in node.get("sub_plans") or []:
@@ -329,55 +356,45 @@ class IntentionalAgent(Agent):
                     out.extend(_walk(ch))
             return out
 
-        def _extract_action_name(action_text: str) -> str:
-            # 允許：ActionName(...) 或 "ActionName"（保守取 '(' 前）
-            s = (action_text or "").strip()
-            if not s:
-                return ""
-            if "(" in s:
-                return s.split("(", 1)[0].strip()
-            return s
-
-        nodes = _walk(plan) if isinstance(plan, dict) else []
-        atomic_nodes = [
-            n for n in nodes
-            if (n.get("type") == "atomic") or (n.get("is_atomic") is True)
-        ]
-
-        illegal_atoms: list[dict[str, Any]] = []
-        for n in atomic_nodes:
+        illegal: list[dict[str, Any]] = []
+        for n in _walk(plan):
+            if not (n.get("type") == "atomic" or n.get("is_atomic") is True):
+                continue
             act = n.get("action")
             if not isinstance(act, str):
                 continue
-            act_name = _extract_action_name(act)
+            act_name = self._action_name_from_sig(act)
             if act_name and (act_name not in allowed_action_names):
-                illegal_atoms.append({"id": n.get("id"), "action": act, "action_name": act_name})
+                illegal.append({"id": n.get("id"), "action": act, "action_name": act_name})
+        return illegal
 
-        if illegal_atoms:
-            return {
-                "id": "root",
-                "intent": norm,
-                "depth": 0,
-                "scheduled_start": "N/A",
-                "type": "leaf_unresolved",
-                "reason": "Planner produced actions outside allowed set.",
-                "unmatched_sub_intentions": [],
-                "matched_sub_intentions": [s.intent for s in subs],
-                "sub_plans": [],
-                "execution_logic": [],
-                "debug": {
-                    "sub_intentions": [s.intent for s in subs],
-                    "allowed_actions": sorted(list(allowed_action_names)),
-                    "illegal_atomic_nodes": illegal_atoms,
-                },
-            }
-
-        plan.setdefault("debug", {})
-        plan["debug"]["sub_intentions"] = [s.intent for s in subs]
-        plan["debug"]["allowed_actions"] = sorted(list(allowed_action_names))
-
-        logger.debug(f"Generated plan: {json.dumps(plan, indent=2, ensure_ascii=False)}")
-        return plan
+    @staticmethod
+    def _make_unresolved(
+        *,
+        intent: str,
+        subs: list[SubIntent],
+        reason: str,
+        unmatched: list[str] | None = None,
+        matched: list[str] | None = None,
+        extra_debug: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """統一產生 leaf_unresolved 形式的回傳 dict。"""
+        debug: dict[str, Any] = {"sub_intentions": [s.intent for s in subs]}
+        if extra_debug:
+            debug.update(extra_debug)
+        return {
+            "id": "root",
+            "intent": intent,
+            "depth": 0,
+            "scheduled_start": "N/A",
+            "type": "leaf_unresolved",
+            "reason": reason,
+            "unmatched_sub_intentions": unmatched or [],
+            "matched_sub_intentions": matched or [],
+            "sub_plans": [],
+            "execution_logic": [],
+            "debug": debug,
+        }
 
 
     def _compute_execution_levels(

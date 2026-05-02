@@ -19,7 +19,7 @@ def minimal_agent_config():
     # kg: 讓 IntentionalAgent.kg 的 type 檢查通過，實際連線由 stub 取代
     return {
         "llm": {},
-        "kg": {"type": "neo4j", "neo4j": {}},
+        "kg": {"type": "neo4j", "neo4j": {}, "neo4j_actions": {}},
     }
 
 

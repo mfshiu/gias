@@ -3,6 +3,7 @@
 #
 # 執行：python -m tests.seed_actions_with_embeddings.seed_actions_simple
 #
+# 使用 [kg.neo4j] 連線同一 Neo4j，[kg.neo4j_actions] 僅覆寫 database 為 actions。
 # --- 查詢（embedding 存在 Action.description_embedding，之後只用 Table 查詢）---
 #
 # 建議使用 Table 檢視（執行前先點 Table 圖示，不要用 Graph），避免載入大屬性：
@@ -190,16 +191,24 @@ def main():
     if kg_cfg.get("type") != "neo4j":
         raise RuntimeError("KG type must be neo4j for this seed script")
 
-    neo = kg_cfg.get("neo4j")
-    if not isinstance(neo, dict):
+    base = kg_cfg.get("neo4j")
+    actions_overrides = kg_cfg.get("neo4j_actions")
+    if not isinstance(base, dict):
         raise RuntimeError("Missing [kg.neo4j] config in gias.toml")
+    if not isinstance(actions_overrides, dict):
+        raise RuntimeError("Missing [kg.neo4j_actions] config in gias.toml")
 
-    kg = Neo4jBoltAdapter.from_config(neo, logger=None)
+    # 同一 Neo4j 實例，僅 database 不同（neo4j / actions）
+    merged = {**base, **actions_overrides}
+    kg = Neo4jBoltAdapter.from_config(merged, logger=None)
 
     llm_cfg = cfg.get("llm")
     if not isinstance(llm_cfg, dict):
         raise RuntimeError("Missing [llm] config in gias.toml")
     llm = LLMClient.from_config(cfg)
+
+    db_name = merged.get("database", "neo4j")
+    print(f">>> Target database: {db_name}")
 
     # 清資料：Action/Param（embedding 存在 Action.description_embedding）
     print(">>> Clearing Action/Param nodes")
