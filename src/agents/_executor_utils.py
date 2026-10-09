@@ -203,6 +203,18 @@ def new_task_id(prefix: str = "task") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
+# 未綁定 task 時 payload 使用的佔位值
+UNKNOWN_TASK = "Unknown"
+
+
+def is_missing_task(task: Any) -> bool:
+    """task 未綁定（None、空字串或佔位值 "Unknown"）時回傳 True。
+
+    這類請求沒有任何 executor 能真正執行，必須視為失敗，不可回報成功。
+    """
+    return not isinstance(task, str) or not task.strip() or task.strip() == UNKNOWN_TASK
+
+
 # ----------------------------------------------------------------------
 # CancelToken：跨 thread 的中斷旗標（不依賴 threading.Event 以方便 mock）
 # ----------------------------------------------------------------------

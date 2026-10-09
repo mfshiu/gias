@@ -30,8 +30,10 @@ from src.agents._executor_utils import (
     TOPIC_INFO_PROGRESS,
     TOPIC_INFO_REQUEST,
     TOPIC_INFO_RESULT,
+    UNKNOWN_TASK,
     build_progress_payload,
     build_result,
+    is_missing_task,
     parse_action_payload,
     parse_cancel_payload,
 )
@@ -241,6 +243,22 @@ class InfoAgent(Agent):
             flush=True,
         )
         logger.info("InfoAgent received: task=%s task_id=%s", task, task_id)
+
+        # 未綁定 task 的請求無法執行，必須回報失敗（不可落到預設分支回成功）
+        if is_missing_task(task):
+            logger.warning("InfoAgent rejected request without task: task_id=%s", task_id)
+            result = build_result(
+                task=str(task or UNKNOWN_TASK),
+                message="請求缺少 task，無法執行。",
+                action_id=action_id,
+                intent=intent,
+                task_id=task_id,
+                ok=False,
+                error="missing task",
+            )
+            if task_id:
+                self._publish_result(result)
+            return result
 
         # idempotency：相同 key 在同個 process 內直接回 cache
         if idempotency_key and idempotency_key in self._idempotency_cache:

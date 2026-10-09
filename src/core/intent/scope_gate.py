@@ -7,6 +7,26 @@ class ScopeDecision:
     can_execute: bool
     reason: str
 
+
+class ScopeGateError(RuntimeError):
+    """ScopeGate 無法得出可信的判斷（LLM 呼叫失敗，或回覆格式不符）。"""
+
+
+def _parse_bool(value: Any) -> bool | None:
+    """嚴格解析布林值；無法判定時回傳 None（避免 bool("false") 變成 True）。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "yes"):
+            return True
+        if s in ("false", "no"):
+            return False
+    return None
+
+
 class ScopeGate:
     # 功能：能否用「目前可用的 actions」完成「使用者的意圖」
     # 輸入：使用者的意圖、目前可用的 actions
@@ -15,6 +35,8 @@ class ScopeGate:
     # 1. 把使用者的意圖和目前可用的 actions 轉成 prompt
     # 2. 用 LLM 判斷是否能執行
     # 3. 回傳是否能執行、原因
+    # 4. LLM 失敗或回覆格式不符時拋出 ScopeGateError，
+    #    由呼叫端依 scope_gate_strict 決定拒絕或放行
 
     def __init__(self, llm, logger):
         self.llm = llm
@@ -44,14 +66,15 @@ class ScopeGate:
             },
         ]
 
-        # 用你的 LLMClient.json 走 schema（若你不想加 schema，至少用 strict json）
         try:
-            obj = self.llm.json(messages, schema=None)  # 若你的 llm.json 一定要 schema，就改成小 pydantic
-            can_execute = bool(obj.get("can_execute", False))
-            reason = str(obj.get("reason", "")).strip() or "No reason provided."
-            return ScopeDecision(can_execute=can_execute, reason=reason)
+            obj = self.llm.json(messages, schema=None)
         except Exception as e:
-            # 保守策略：若 gate 自身失敗，為避免誤殺，可選擇放行或拒絕
-            # 建議：測試/嚴格模式下拒絕；正式服務模式下放行並記 log
-            self.logger.warning("ScopeGate failed: %s", e)
-            return ScopeDecision(can_execute=True, reason="ScopeGate failed; allow by default.")
+            raise ScopeGateError(f"LLM call failed: {e}") from e
+
+        if not isinstance(obj, dict):
+            raise ScopeGateError(f"Malformed response: expected a JSON object, got {type(obj).__name__}")
+        can_execute = _parse_bool(obj.get("can_execute"))
+        if can_execute is None:
+            raise ScopeGateError(f"Malformed response: can_execute={obj.get('can_execute')!r}")
+        reason = str(obj.get("reason", "")).strip() or "No reason provided."
+        return ScopeDecision(can_execute=can_execute, reason=reason)

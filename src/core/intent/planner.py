@@ -46,6 +46,35 @@ def _parse_action_params(action_text: str) -> dict:
     return out
 
 
+def _child_node_id(parent_id: str, local_id: str) -> str:
+    """把 LLM 給的同層 id 轉成全域唯一的階層式 id。
+
+    LLM 每一層都會從 "1" 開始編號，而 PlanCursor 以 id 索引整棵樹，
+    因此非 root 的子節點一律加上父節點前綴（例：父 "2" 的子節點 "1" → "2.1"）。
+    root 的子節點維持原 id，與既有 plan 格式相容。
+    """
+    if parent_id in ("", "root"):
+        return local_id
+    if local_id.startswith(f"{parent_id}."):
+        return local_id
+    return f"{parent_id}.{local_id}"
+
+
+def _remap_relationships(relationships: list, id_map: dict[str, str]) -> list[dict]:
+    """把 relationships 的 from_id / to_id 從同層 id 換成全域 id；對應不到的保留原值。"""
+    out: list[dict] = []
+    for rel in relationships or []:
+        if not isinstance(rel, dict):
+            continue
+        r = dict(rel)
+        for k in ("from_id", "to_id"):
+            v = r.get(k)
+            if v is not None and str(v) in id_map:
+                r[k] = id_map[str(v)]
+        out.append(r)
+    return out
+
+
 class RecursivePlanner:
     def __init__(self, *, decomposer, logger, kg=None, action_store=None):
         self.decomposer = decomposer
@@ -133,7 +162,6 @@ class RecursivePlanner:
             current_node["error"] = "Decomposition failed"
             return current_node
 
-        current_node["execution_logic"] = result_json.get("relationships", [])
         sub_intents = result_json.get("sub_intents", [])
 
         if not sub_intents:
@@ -141,8 +169,20 @@ class RecursivePlanner:
             current_node["is_atomic"] = True
             return current_node
 
-        for sub in sub_intents:
-            sub_id = sub.get("id", "unknown")
+        # LLM 回傳的 id 只在同層有效：先轉成全域唯一 id，再改寫 relationships
+        child_ids: list[str] = []
+        id_map: dict[str, str] = {}
+        for idx, sub in enumerate(sub_intents, 1):
+            local_id = str(sub.get("id") or "").strip() or str(idx)
+            global_id = _child_node_id(node_id, local_id)
+            if global_id in child_ids:
+                self.logger.warning("Duplicate sub-intent id %r under %r; renamed", local_id, node_id)
+                global_id = f"{global_id}#{idx}"
+            child_ids.append(global_id)
+            id_map.setdefault(local_id, global_id)
+        current_node["execution_logic"] = _remap_relationships(result_json.get("relationships", []), id_map)
+
+        for sub, sub_id in zip(sub_intents, child_ids):
             child_intent = sub.get("intent", "")
             action = sub.get("action", "")
             is_atomic = sub.get("is_atomic", False)

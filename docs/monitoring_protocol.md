@@ -152,6 +152,9 @@ execute_plan_with_monitoring(plan):
   budget = BudgetGuard(...)
   while not cursor.done() and not budget.exhausted():
     drain monitor → (env_changes, action_results)
+    action_results 中 task_id 不是節點目前派工的（retry 前舊派工遲到）→ 丟棄
+    IN_FLIGHT 超過 deadline_sec（預設 intent.monitoring.node_timeout_sec = 30）
+      → 送 *.cancel，並當成 ok=false 的結果併入 action_results
     decision = trigger.decide(env_changes, action_results, cursor)
     if decision is ABORT: break
     if decision is non-NONE: repair.apply(decision); continue

@@ -31,6 +31,51 @@ def _is_atomic_node(node: dict[str, Any]) -> bool:
     return node.get("type") == "atomic" or node.get("is_atomic") is True
 
 
+class DuplicateNodeIdError(ValueError):
+    """plan 樹中出現重複的節點 id。
+
+    cursor 以 id 索引節點；id 重複會讓後出現的節點被略過（不執行卻不報錯），
+    因此一律拒絕。
+    """
+
+
+def _iter_node_ids(node: Any) -> Iterable[str]:
+    """依 cursor 的走訪規則列出樹中所有節點 id（不進入 atomic 的 sub_plans）。
+
+    沒有 id 的節點會由 _ensure_id 補上唯一 id，這裡略過。
+    """
+    if not isinstance(node, dict):
+        return
+    nid = node.get("id")
+    if nid:
+        yield str(nid)
+    if _is_atomic_node(node):
+        return
+    for child in node.get("sub_plans") or []:
+        yield from _iter_node_ids(child)
+
+
+def find_duplicate_node_ids(plan: dict[str, Any] | None) -> list[str]:
+    """回傳 plan 樹中重複的節點 id（composite 與 atomic 共用同一個命名空間）。"""
+    seen: set[str] = set()
+    dups: list[str] = []
+    for nid in _iter_node_ids(plan):
+        if nid in seen:
+            if nid not in dups:
+                dups.append(nid)
+        else:
+            seen.add(nid)
+    return dups
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
 @dataclass(slots=True)
 class NodeRecord:
     """單一 atomic 節點的執行記錄。"""
@@ -87,6 +132,9 @@ class PlanCursor:
 
     def __init__(self, plan: dict[str, Any]):
         self._plan = copy.deepcopy(plan) if plan else {"id": "root", "sub_plans": [], "execution_logic": []}
+        dups = find_duplicate_node_ids(self._plan)
+        if dups:
+            raise DuplicateNodeIdError(f"Duplicate node ids in plan: {dups}")
         self._records: dict[str, NodeRecord] = {}
         self._composite_parent: dict[str, str | None] = {}   # composite_id -> parent_id
         self._task_index: dict[str, str] = {}                # task_id -> node_id
@@ -277,6 +325,25 @@ class PlanCursor:
         """全部 atomic 都終態？（DONE / FAILED / CANCELLED / OBSOLETE / SKIPPED）"""
         return all(r.is_terminal() for r in self._records.values())
 
+    def overdue_in_flight(
+        self, *, default_timeout_sec: float | None, now: float | None = None
+    ) -> list[NodeRecord]:
+        """回傳派工後超過時限仍未回報結果的 IN_FLIGHT 節點。
+
+        時限優先取節點自身的 deadline_sec，否則用 default_timeout_sec；兩者皆無則不逾時。
+        """
+        now = time.time() if now is None else now
+        overdue: list[NodeRecord] = []
+        for rec in self._records.values():
+            if rec.state != NodeState.IN_FLIGHT or rec.dispatched_at is None:
+                continue
+            limit = _positive_float(rec.node.get("deadline_sec"))
+            if limit is None:
+                limit = _positive_float(default_timeout_sec)
+            if limit is not None and now - rec.dispatched_at >= limit:
+                overdue.append(rec)
+        return overdue
+
     def all_successful(self) -> bool:
         terminals = [r for r in self._records.values() if r.is_terminal()]
         if not terminals:
@@ -351,12 +418,16 @@ class PlanCursor:
 
         若 node 已是 terminal（含 OBSOLETE）：仍接收結果（更新 last_result 供 debug），
         但不改變 state。
+        若 task_id 不是該節點目前這次派工（retry 前的舊派工遲到的結果）：忽略並回傳 None，
+        避免舊結果覆寫新一次派工的狀態。
         """
         nid = self._task_index.get(task_id)
         if not nid:
             return None
         rec = self._records.get(nid)
         if rec is None:
+            return None
+        if rec.task_id != task_id:
             return None
         ok = bool(payload.get("ok", False)) if isinstance(payload, dict) else False
         cancelled = bool(payload.get("cancelled", False)) if isinstance(payload, dict) else False
@@ -414,10 +485,17 @@ class PlanCursor:
             - PENDING → mark_skipped
             - 其餘 terminal → 保留原狀
         - 新 subtree 中的 atomic 進入 cursor 索引，初始 PENDING
-        - 回傳 True 表示成功
+        - 回傳 True 表示成功；新子樹的 id 自身重複或與既有節點衝突時回傳 False，cursor 不做任何改動
         """
         composite = self._find_node_in_tree(self._plan, composite_id)
         if composite is None or _is_atomic_node(composite):
+            return False
+        new_sub_plans = list(new_subtree.get("sub_plans") or [])
+        new_ids = [nid for child in new_sub_plans for nid in _iter_node_ids(child)]
+        # 被替換掉的舊 composite 後代 id 可重用；舊 atomic 仍留在 _records 中，不可重用
+        replaced_ids = set(_iter_node_ids(composite)) - {composite_id}
+        taken = (set(_iter_node_ids(self._plan)) - replaced_ids) | set(self._records)
+        if len(set(new_ids)) != len(new_ids) or any(nid in taken for nid in new_ids):
             return False
         # 1) 把舊子樹的 atomic 標記為「已被取代」
         #    任何非 DONE 的舊節點都應視為被替換掉，不影響最終 ok 判定
@@ -437,7 +515,6 @@ class PlanCursor:
                 rec.state = NodeState.OBSOLETE
                 rec.error = (rec.error + " | replaced") if rec.error else "replaced"
         # 2) 替換 composite 內容
-        new_sub_plans = list(new_subtree.get("sub_plans") or [])
         new_exec_logic = list(new_subtree.get("execution_logic") or [])
         composite["sub_plans"] = new_sub_plans
         composite["execution_logic"] = new_exec_logic
@@ -454,7 +531,18 @@ class PlanCursor:
         return True
 
     def replace_root(self, new_plan: dict[str, Any]) -> None:
-        """整個 plan 換掉。所有非 DONE 的舊節點皆視為被取代。"""
+        """整個 plan 換掉。所有非 DONE 的舊節點皆視為被取代。
+
+        新 plan 的 id 自身重複，或與保留中的舊 atomic 記錄衝突時，
+        拋出 DuplicateNodeIdError，cursor 不做任何改動。
+        """
+        new_plan_copy = copy.deepcopy(new_plan)
+        dups = find_duplicate_node_ids(new_plan_copy)
+        clashes = [nid for nid in _iter_node_ids(new_plan_copy) if nid in self._records]
+        if dups or clashes:
+            raise DuplicateNodeIdError(
+                f"New root plan has duplicate ids {dups} or ids clashing with existing records {clashes}"
+            )
         old_ids = list(self._records.keys())
         for nid in old_ids:
             rec = self._records[nid]
@@ -468,7 +556,6 @@ class PlanCursor:
                 rec.state = NodeState.OBSOLETE
                 rec.error = (rec.error + " | replaced") if rec.error else "replaced"
         # 保留舊 records（仍可由 task_id 索引），但建立全新一棵
-        new_plan_copy = copy.deepcopy(new_plan)
         self._plan = new_plan_copy
         self._composite_parent.clear()
         self._index_tree(new_plan_copy, parent_id=None)

@@ -110,3 +110,20 @@ def test_cancel_interrupts_locate_exhibit():
     assert payload["task_id"] == "NT-cancel"
     assert payload["cancelled"] is True
     assert payload["ok"] is False
+
+
+# ----------------------------------------------------------------------
+# C-02：缺少 task 的請求必須回報失敗
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("task", [None, "", "Unknown"])
+def test_handle_missing_task_returns_failure(fast_nav_env, task):
+    agent = _nav_agent()
+    payload = {"params": {}, "task_id": "NT-missing"}
+    if task is not None:
+        payload["task"] = task
+    with patch.object(agent, "publish") as mock_pub:
+        result = agent._handle("navigation.request", _FakeParcel(payload))
+    assert result["ok"] is False
+    assert result["error"] == "missing task"
+    pub_calls = _publish_calls_to(mock_pub, TOPIC_NAVIGATION_RESULT)
+    assert pub_calls and pub_calls[0][0][1]["ok"] is False

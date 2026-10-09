@@ -422,3 +422,23 @@ def test_execute_plan_topic_fallback_when_empty(mock_adapter_cls):
     assert result["ok"] is True
     mock_sync.assert_called_once()
     assert mock_sync.call_args[0][0] == TOPIC_INFO_REQUEST
+
+
+@patch("src.core.intentional_agent.Neo4jBoltAdapter")
+def test_execute_plan_atomic_without_task_is_not_published(mock_adapter_cls):
+    """C-02：沒有 task 的 atomic 不可送出，也不可回報成功。"""
+    mock_adapter_cls.from_config.return_value = MagicMock()
+    agent = IntentionalAgent(agent_config=_minimal_agent_config(), intention="test")
+    plan = {
+        "id": "root",
+        "type": "composite",
+        "sub_plans": [
+            {"id": "a1", "type": "leaf_no_children", "is_atomic": True, "intent": "?", "sub_plans": []},
+        ],
+        "execution_logic": [],
+    }
+    with patch.object(agent, "publish_sync") as mock_sync:
+        result = agent.execute_plan(plan)
+    mock_sync.assert_not_called()
+    assert result["ok"] is False
+    assert result["results"][0]["ok"] is False

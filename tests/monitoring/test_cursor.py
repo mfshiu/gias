@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from src.core.monitoring.cursor import PlanCursor
+import pytest
+
+from src.core.monitoring.cursor import DuplicateNodeIdError, PlanCursor, find_duplicate_node_ids
 from src.core.monitoring.events import NodeState
 
 
@@ -244,3 +246,110 @@ def test_done_true_when_all_terminal():
         tid = c.mark_dispatched(nid)
         c.accept_action_result(tid, {"task_id": tid, "ok": True})
     assert c.done() is True
+
+
+# ----------------------------------------------------------------------
+# C-01：節點 id 必須全域唯一
+# ----------------------------------------------------------------------
+def _plan_with_nested_duplicate_ids() -> dict:
+    """模擬舊版 RecursivePlanner 輸出：LLM 在每一層都從 "1" 開始編號。"""
+    return {
+        "id": "root",
+        "type": "composite",
+        "execution_logic": [{"type": "Sequence", "from_id": "1", "to_id": "2"}],
+        "sub_plans": [
+            {"id": "1", "type": "atomic", "is_atomic": True, "task": "TaskA", "sub_plans": []},
+            {"id": "2", "type": "composite", "execution_logic": [], "sub_plans": [
+                {"id": "1", "type": "atomic", "is_atomic": True, "task": "TaskB1", "sub_plans": []},
+                {"id": "2", "type": "atomic", "is_atomic": True, "task": "TaskB2", "sub_plans": []},
+            ]},
+        ],
+    }
+
+
+def test_find_duplicate_node_ids_covers_atomic_and_composite():
+    assert find_duplicate_node_ids(_plan_with_nested_duplicate_ids()) == ["1", "2"]
+    assert find_duplicate_node_ids(_nested_plan()) == []
+
+
+def test_duplicate_node_ids_rejected_on_construction():
+    # 舊行為：TaskB1 被靜默略過，最後仍回報 ok=True
+    with pytest.raises(DuplicateNodeIdError):
+        PlanCursor(_plan_with_nested_duplicate_ids())
+
+
+def test_replace_subtree_rejects_id_clash_without_mutation():
+    c = PlanCursor(_nested_plan())
+    tid = c.mark_dispatched("a")
+    # 新子樹的 "c" 與 L2-2 底下既有的 atomic "c" 衝突
+    clash = {"id": "x", "sub_plans": [
+        {"id": "c", "type": "atomic", "is_atomic": True, "task": "T", "sub_plans": []},
+    ]}
+    assert c.replace_subtree("L2-1", clash) is False
+    assert c.record("a").state == NodeState.IN_FLIGHT
+    assert c.record("a").task_id == tid
+    assert c.record("b").state == NodeState.PENDING
+    assert [n["id"] for n in c.composite_node("L2-1")["sub_plans"]] == ["a", "b"]
+
+
+def test_replace_subtree_rejects_duplicate_ids_inside_new_subtree():
+    c = PlanCursor(_nested_plan())
+    dup = {"id": "x", "sub_plans": [
+        {"id": "n1", "type": "atomic", "is_atomic": True, "task": "T", "sub_plans": []},
+        {"id": "n1", "type": "atomic", "is_atomic": True, "task": "T", "sub_plans": []},
+    ]}
+    assert c.replace_subtree("L2-1", dup) is False
+    assert c.record("n1") is None
+
+
+def test_replace_root_rejects_id_clash_without_mutation():
+    c = PlanCursor(_nested_plan())
+    clash = {"id": "root2", "type": "composite", "execution_logic": [], "sub_plans": [
+        {"id": "a", "type": "atomic", "is_atomic": True, "task": "T", "sub_plans": []},
+    ]}
+    with pytest.raises(DuplicateNodeIdError):
+        c.replace_root(clash)
+    assert c.root()["id"] == "root"
+    assert c.record("a").state == NodeState.PENDING
+
+
+# ----------------------------------------------------------------------
+# C-04：retry 前舊派工的遲到結果不可覆寫新派工；逾時偵測
+# ----------------------------------------------------------------------
+def test_stale_result_after_retry_is_ignored():
+    c = PlanCursor(_parallel_two_atomics())
+    old_tid = c.mark_dispatched("x")
+    c.accept_action_result(old_tid, {"task_id": old_tid, "ok": False, "error": "timeout"})
+    c.reset_for_retry("x")
+    # 尚未重派時，舊派工遲到的成功結果不可讓節點變 DONE
+    assert c.accept_action_result(old_tid, {"task_id": old_tid, "ok": True}) is None
+    assert c.record("x").state == NodeState.PENDING
+    new_tid = c.mark_dispatched("x")
+    assert c.accept_action_result(old_tid, {"task_id": old_tid, "ok": True}) is None
+    assert c.record("x").state == NodeState.IN_FLIGHT
+    assert c.accept_action_result(new_tid, {"task_id": new_tid, "ok": True}) is not None
+    assert c.record("x").state == NodeState.DONE
+
+
+def test_overdue_in_flight_uses_default_timeout_and_node_deadline():
+    plan = _parallel_two_atomics()
+    plan["sub_plans"][1]["deadline_sec"] = 5   # y 自訂較短的時限
+    c = PlanCursor(plan)
+    c.mark_dispatched("x")
+    c.mark_dispatched("y")
+    t0 = c.record("x").dispatched_at
+
+    def overdue(at, default):
+        return sorted(r.node_id for r in c.overdue_in_flight(default_timeout_sec=default, now=t0 + at))
+
+    assert overdue(1, 30) == []
+    assert overdue(6, 30) == ["y"]
+    assert overdue(31, 30) == ["x", "y"]
+    assert overdue(31, None) == ["y"]   # 無預設時限時只有自訂 deadline 的節點會逾時
+
+
+def test_overdue_in_flight_ignores_non_in_flight():
+    c = PlanCursor(_parallel_two_atomics())
+    tid = c.mark_dispatched("x")
+    c.accept_action_result(tid, {"task_id": tid, "ok": True})
+    assert c.overdue_in_flight(default_timeout_sec=1, now=c.record("x").dispatched_at + 100) == []

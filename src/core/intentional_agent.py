@@ -45,13 +45,16 @@ from src.agents._executor_utils import (
     build_action_payload,
     build_cancel_payload,
     cancel_topic_for,
+    is_missing_task,
     new_task_id,
     resolve_request_topic,
     result_topic_for,
 )
 from src.core.monitoring import (
+    ActionResult,
     Budget,
     BudgetGuard,
+    DuplicateNodeIdError,
     ExecutionMonitor,
     NodeState,
     PlanCursor,
@@ -59,6 +62,7 @@ from src.core.monitoring import (
     ReplanDecision,
     ReplanTrigger,
     TriggerKind,
+    find_duplicate_node_ids,
 )
 from src.core.monitoring.trigger import TriggerConfig
 
@@ -261,6 +265,30 @@ class IntentionalAgent(Agent):
                 },
             )
 
+        unexecutable = self._find_unexecutable_nodes(plan)
+        if unexecutable:
+            return self._make_unresolved(
+                intent=norm, subs=subs,
+                reason="Planner produced nodes that cannot be dispatched.",
+                matched=[s.intent for s in subs],
+                extra_debug={
+                    "allowed_actions": sorted(allowed_action_names),
+                    "unexecutable_nodes": unexecutable,
+                },
+            )
+
+        duplicate_ids = find_duplicate_node_ids(plan)
+        if duplicate_ids:
+            return self._make_unresolved(
+                intent=norm, subs=subs,
+                reason="Planner produced duplicate node ids.",
+                matched=[s.intent for s in subs],
+                extra_debug={
+                    "allowed_actions": sorted(allowed_action_names),
+                    "duplicate_node_ids": duplicate_ids,
+                },
+            )
+
         plan.setdefault("debug", {})
         plan["debug"]["sub_intentions"] = [s.intent for s in subs]
         plan["debug"]["allowed_actions"] = sorted(allowed_action_names)
@@ -382,6 +410,37 @@ class IntentionalAgent(Agent):
         return illegal
 
     @staticmethod
+    def _find_unexecutable_nodes(plan: dict[str, Any]) -> list[dict[str, Any]]:
+        """找出無法派工的節點。
+
+        - atomic 但沒有綁定 task（例：leaf_no_children、leaf_forced_atomic、action 為空）
+        - composite 但沒有任何子節點（例：LLM 拆解失敗）
+        這些節點若放行，前者會被當成 "Unknown" 送出，後者會被當成已完成，兩者都會造成假成功。
+        """
+        if not isinstance(plan, dict):
+            return []
+
+        found: list[dict[str, Any]] = []
+
+        def _walk(node: Any) -> None:
+            if not isinstance(node, dict):
+                return
+            info = {"id": node.get("id"), "type": node.get("type"), "intent": node.get("intent", "")}
+            if node.get("type") == "atomic" or node.get("is_atomic") is True:
+                if is_missing_task(node.get("task")):
+                    found.append({**info, "action": node.get("action", ""), "reason": "no_bound_task"})
+                return
+            children = [c for c in (node.get("sub_plans") or []) if isinstance(c, dict)]
+            if not children:
+                found.append({**info, "reason": node.get("error") or "empty_composite"})
+                return
+            for child in children:
+                _walk(child)
+
+        _walk(plan)
+        return found
+
+    @staticmethod
     def _make_unresolved(
         *,
         intent: str,
@@ -432,6 +491,10 @@ class IntentionalAgent(Agent):
         params = node.get("params") or {}
         action_id = node.get("action_id")
         intent = node.get("intent", "")
+
+        if is_missing_task(node.get("task")):
+            logger.warning("Dispatch skipped: node=%s has no bound task", node.get("id"))
+            return {"ok": False, "result": {"error": "node has no bound task; not dispatched"}}
 
         topic_name = resolve_request_topic(topic)
         payload = build_action_payload(task=task, params=params, action_id=action_id, intent=intent)
@@ -535,7 +598,11 @@ class IntentionalAgent(Agent):
         logger.debug("Starting monitored plan execution.")
 
         # 1) 建立 cursor / monitor / guard / trigger / repair
-        cursor = PlanCursor(plan)
+        try:
+            cursor = PlanCursor(plan)
+        except DuplicateNodeIdError as e:
+            logger.warning("Plan rejected: %s", e)
+            return {"ok": False, "message": "計畫節點 id 重複，無法執行。", "plan": plan, "error": str(e)}
         budget = budget or self._build_budget()
         guard = BudgetGuard(budget)
         monitor = self._ensure_monitor()
@@ -564,12 +631,10 @@ class IntentionalAgent(Agent):
             changes = monitor.drain_changes()
             results = monitor.drain_results()
 
-            # 3b) 把 results 套回 cursor
+            # 3b) 把 results 套回 cursor；未知或過期（retry 前舊派工）的結果不交給 trigger
+            fresh: list[ActionResult] = []
             for ar in results:
-                rec = cursor.find_by_task_id(ar.task_id)
-                if rec is None:
-                    continue
-                cursor.accept_action_result(ar.task_id, {
+                rec = cursor.accept_action_result(ar.task_id, {
                     "task_id": ar.task_id,
                     "ok": ar.ok,
                     "cancelled": ar.cancelled,
@@ -578,10 +643,15 @@ class IntentionalAgent(Agent):
                     "result": ar.result,
                     "task": ar.task,
                 })
+                if rec is not None:
+                    fresh.append(ar)
+
+            # 3b-1) 逾時未回報的節點視同失敗，交給 trigger 走 retry / replan
+            fresh.extend(self._expire_overdue_atomics(cursor, budget, dispatcher=dispatcher))
 
             # 3c) 諮詢 trigger
             decision = trigger.decide(
-                action_results=results,
+                action_results=fresh,
                 env_changes=changes,
                 cursor=cursor,
                 intent=loop_intent,
@@ -603,12 +673,12 @@ class IntentionalAgent(Agent):
                 dispatched_now += 1
 
             # 3e) 等待信號或 idle 自旋限制
-            if dispatched_now == 0 and not changes and not results:
+            if dispatched_now == 0 and not changes and not results and not fresh:
                 got = monitor.wait_for_signal(timeout=budget.poll_interval_sec)
                 if not got:
                     idle_polls += 1
                     # 避免無限 idle（例如 dispatcher 是 mock 但忘了回傳）：
-                    # 若所有 atomic 皆 IN_FLIGHT 而沒有任何結果，繼續等；
+                    # 若所有 atomic 皆 IN_FLIGHT 而沒有任何結果，繼續等（node_timeout_sec 保證不會無限等）；
                     # 若全 PENDING 也沒人 dispatch 成功，視為卡住 → ABORT
                     if idle_polls >= 5 and not any(
                         r.state == NodeState.IN_FLIGHT for r in cursor.all_records()
@@ -632,12 +702,15 @@ class IntentionalAgent(Agent):
         m = cfg.get("intent", {}).get("monitoring") if isinstance(cfg.get("intent"), dict) else {}
         if not isinstance(m, dict):
             m = {}
+        # node_timeout_sec <= 0 表示不限（TOML 無 null 可用）
+        node_timeout = float(m.get("node_timeout_sec", 30.0))
         return Budget(
             max_replans=int(m.get("max_replans", 3)),
             max_retries_per_node=int(m.get("max_retries_per_node", 1)),
             deadline_sec=m.get("deadline_sec"),
             poll_interval_sec=float(m.get("poll_interval_sec", 0.2)),
             cancel_grace_sec=float(m.get("cancel_grace_sec", 3.0)),
+            node_timeout_sec=node_timeout if node_timeout > 0 else None,
         )
 
     def _ensure_monitor(self) -> ExecutionMonitor:
@@ -670,6 +743,10 @@ class IntentionalAgent(Agent):
         budget: Budget,
     ) -> None:
         node = rec.node
+        if is_missing_task(node.get("task")):
+            logger.warning("Dispatch skipped: node=%s has no bound task", rec.node_id)
+            cursor.mark_failed(rec.node_id, "node has no bound task; not dispatched")
+            return
         topic_raw = node.get("topic")
         topic_name = resolve_request_topic(topic_raw)
         task_id = new_task_id(prefix=str(rec.node_id))
@@ -701,6 +778,29 @@ class IntentionalAgent(Agent):
             logger.warning("Dispatch failed: node=%s err=%s", rec.node_id, e)
             cursor.mark_failed(rec.node_id, str(e), result={"payload": payload, "error": str(e)})
             monitor.unbind_task(task_id)
+
+    def _expire_overdue_atomics(
+        self,
+        cursor: PlanCursor,
+        budget: Budget,
+        *,
+        dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None,
+    ) -> list[ActionResult]:
+        """把派工後超過時限仍未回報的節點標為失敗，並對 executor 送 cancel。
+
+        回傳對應的 ActionResult，讓 trigger 用與一般失敗相同的規則決定 retry / replan。
+        """
+        expired: list[ActionResult] = []
+        now = time.time()
+        for rec in cursor.overdue_in_flight(default_timeout_sec=budget.node_timeout_sec, now=now):
+            task_id = rec.task_id or ""
+            error = f"timeout: no result {now - (rec.dispatched_at or now):.1f}s after dispatch"
+            logger.warning("Action timeout: node=%s task_id=%s %s", rec.node_id, task_id, error)
+            self._send_cancel(rec, reason="timeout", dispatcher=dispatcher)
+            payload = {"task_id": task_id, "ok": False, "error": error, "task": rec.node.get("task") or ""}
+            if cursor.accept_action_result(task_id, payload) is not None:
+                expired.append(ActionResult.from_payload(payload, node_id=rec.node_id))
+        return expired
 
     def _cancel_in_flight(
         self,

@@ -18,7 +18,7 @@ import uuid
 from typing import Any, Callable
 
 from .events import ReplanDecision, TriggerKind
-from .cursor import PlanCursor
+from .cursor import DuplicateNodeIdError, PlanCursor
 
 
 class PlanRepair:
@@ -158,10 +158,12 @@ class PlanRepair:
         _renumber_ids_in_subtree(new_subtree, prefix=f"r{cursor and uuid.uuid4().hex[:4] or ''}")
 
         ok = cursor.replace_subtree(composite_id, new_subtree)
+        if not ok:
+            self.logger.warning("Subtree replan rejected: node ids clash under %s", composite_id)
         return {
             "applied": ok,
             "kind": decision.kind.value,
-            "reason": decision.reason,
+            "reason": decision.reason if ok else "replace_subtree rejected: node id clash",
             "affected": list(decision.affected_node_ids),
             "details": {"composite_id": composite_id, "sub_intent": sub_intent},
         }
@@ -184,7 +186,11 @@ class PlanRepair:
         if not new_plan:
             return {"applied": False, "kind": decision.kind.value, "reason": "planner returned empty"}
         _renumber_ids_in_subtree(new_plan, prefix=f"R{uuid.uuid4().hex[:4]}")
-        cursor.replace_root(new_plan)
+        try:
+            cursor.replace_root(new_plan)
+        except DuplicateNodeIdError as e:
+            self.logger.warning("Root replan rejected: %s", e)
+            return {"applied": False, "kind": decision.kind.value, "reason": f"invalid plan: {e}"}
         return {
             "applied": True,
             "kind": decision.kind.value,

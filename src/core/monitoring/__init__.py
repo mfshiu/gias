@@ -20,7 +20,7 @@ from .events import (
     EnvChange,
     ActionResult,
 )
-from .cursor import NodeRecord, PlanCursor
+from .cursor import DuplicateNodeIdError, NodeRecord, PlanCursor, find_duplicate_node_ids
 from .budget import Budget, BudgetGuard
 from .monitor import ExecutionMonitor
 from .trigger import ReplanTrigger
@@ -32,8 +32,10 @@ __all__ = [
     "ReplanDecision",
     "EnvChange",
     "ActionResult",
+    "DuplicateNodeIdError",
     "NodeRecord",
     "PlanCursor",
+    "find_duplicate_node_ids",
     "Budget",
     "BudgetGuard",
     "ExecutionMonitor",

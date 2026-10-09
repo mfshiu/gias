@@ -20,6 +20,7 @@ class Budget:
     deadline_sec: float | None = None           # 整體執行 deadline；None 表示無上限
     poll_interval_sec: float = 0.5              # 監測迴圈 idle 時的等待週期
     cancel_grace_sec: float = 3.0               # 送出 cancel 後等多久仍未 ack 就放棄等待
+    node_timeout_sec: float | None = 30.0       # atomic 派工後多久沒回報視為失敗（節點 deadline_sec 優先）；None 表示不限
 
 
 class BudgetGuard:
@@ -89,4 +90,5 @@ class BudgetGuard:
             "elapsed_sec": round(self.elapsed_sec(), 3),
             "deadline_sec": self.budget.deadline_sec,
             "deadline_reached": self.deadline_reached(),
+            "node_timeout_sec": self.budget.node_timeout_sec,
         }

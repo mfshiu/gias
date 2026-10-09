@@ -370,3 +370,111 @@ def test_idle_with_no_inflight_aborts():
     )
     assert result["ok"] is False
     assert result["state_counts"].get("failed", 0) >= 1
+
+
+# ----------------------------------------------------------------------
+# C-04：節點逾時 → cancel + 走一般 retry / replan，不會無限等待
+# ----------------------------------------------------------------------
+def _silent_then_ok_dispatcher(agent, *, silent_attempts: int):
+    """前 silent_attempts 次派工不回應（模擬 executor 掛掉或訊息遺失），之後回成功。"""
+    log = {"dispatched": [], "cancelled": []}
+
+    def dispatcher(node, payload):
+        if node.get("_cancel"):
+            log["cancelled"].append(payload.get("task_id"))
+            return
+        log["dispatched"].append(payload.get("task_id"))
+        if len(log["dispatched"]) <= silent_attempts:
+            return
+        agent._monitor.on_action_result("info.result", {
+            "task_id": payload["task_id"], "ok": True, "task": payload.get("task"),
+        })
+
+    return dispatcher, log
+
+
+def test_node_timeout_cancels_and_retries():
+    agent = _make_agent()
+    plan = _root([_atomic("a", task="ExplainExhibit")])
+    disp, log = _silent_then_ok_dispatcher(agent, silent_attempts=1)
+    t0 = time.time()
+    result = agent.execute_plan_with_monitoring(
+        plan,
+        dispatcher=disp,
+        budget=Budget(max_replans=0, max_retries_per_node=1, poll_interval_sec=0.01, node_timeout_sec=0.1),
+    )
+    assert result["ok"] is True
+    assert len(log["dispatched"]) == 2
+    # 逾時的那次派工有送 cancel 給 executor
+    assert log["cancelled"] == [log["dispatched"][0]]
+    assert time.time() - t0 < 5
+
+
+def test_node_timeout_without_retry_budget_terminates():
+    """舊行為：IN_FLIGHT 永遠收不到結果時迴圈會無限等待。"""
+    agent = _make_agent()
+    plan = _root([_atomic("a", task="ExplainExhibit")])
+    disp, log = _silent_then_ok_dispatcher(agent, silent_attempts=99)
+    t0 = time.time()
+    result = agent.execute_plan_with_monitoring(
+        plan,
+        dispatcher=disp,
+        subtree_planner=lambda intent, env: None,
+        budget=Budget(max_replans=0, max_retries_per_node=0, poll_interval_sec=0.01, node_timeout_sec=0.1),
+    )
+    assert result["ok"] is False
+    assert result["results"][0]["error"].startswith("timeout")
+    assert time.time() - t0 < 5
+
+
+def test_node_deadline_overrides_default_timeout():
+    agent = _make_agent()
+    node = _atomic("a", task="ExplainExhibit")
+    node["deadline_sec"] = 0.1
+    disp, log = _silent_then_ok_dispatcher(agent, silent_attempts=1)
+    result = agent.execute_plan_with_monitoring(
+        _root([node]),
+        dispatcher=disp,
+        budget=Budget(max_replans=0, max_retries_per_node=1, poll_interval_sec=0.01, node_timeout_sec=None),
+    )
+    assert result["ok"] is True
+    assert len(log["dispatched"]) == 2
+
+
+def test_build_budget_reads_node_timeout_from_config():
+    agent = _make_agent()
+    agent.agent_config = {"intent": {"monitoring": {"node_timeout_sec": 12}}}
+    assert agent._build_budget().node_timeout_sec == 12
+    agent.agent_config = {"intent": {"monitoring": {"node_timeout_sec": 0}}}
+    assert agent._build_budget().node_timeout_sec is None
+    agent.agent_config = {}
+    assert agent._build_budget().node_timeout_sec == 30.0
+
+
+# ----------------------------------------------------------------------
+# C-02 / C-01：無法派工的節點與 id 重複的 plan
+# ----------------------------------------------------------------------
+def test_atomic_without_task_is_not_dispatched():
+    agent = _make_agent()
+    no_task = {"id": "b", "type": "leaf_forced_atomic", "is_atomic": True, "intent": "?", "sub_plans": []}
+    plan = _root([_atomic("a", task="ExplainExhibit"), no_task])
+    disp = make_dispatcher(agent)
+    result = agent.execute_plan_with_monitoring(plan, dispatcher=disp)
+    # 舊行為：b 以 task="Unknown" 送往 info.request，executor 回成功 → ok=True
+    assert result["ok"] is False
+    assert [c["node_id"] for c in disp.call_log] == ["a"]
+    b = next(r for r in result["results"] if r["id"] == "b")
+    assert b["state"] == "failed"
+
+
+def test_plan_with_duplicate_node_ids_is_rejected():
+    agent = _make_agent()
+    plan = _root([
+        _atomic("1", task="TaskA"),
+        _composite("2", [_atomic("1", task="TaskB1"), _atomic("2.2", task="TaskB2")]),
+    ])
+    disp = make_dispatcher(agent)
+    result = agent.execute_plan_with_monitoring(plan, dispatcher=disp)
+    assert result["ok"] is False
+    assert "id 重複" in result["message"]
+    assert disp.call_log == []

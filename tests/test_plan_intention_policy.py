@@ -88,8 +88,11 @@ def test_plan_intention_success_when_all_sub_intents_matched(monkeypatch, agent)
     # 跳過 selector（會用到 embedder）：直接回傳允許的 action 描述，供後續 planner 使用
     monkeypatch.setattr(agent.selector, "select_actions", lambda sub_intents: {"ActionFor(子意圖A)": "desc", "ActionFor(子意圖B)": "desc"})
     # 避免 planner 真的呼叫 LLM：直接回傳一個「成功」的 plan
+    # （至少要有一個綁定 task 的 atomic；沒有任何步驟的 plan 會被判為無法執行）
     def fake_plan(norm, chosen_actions):
-        return {"id": "root", "intent": norm, "type": "composite", "sub_plans": [], "execution_logic": []}
+        step = {"id": "1", "type": "atomic", "is_atomic": True, "intent": "子意圖A",
+                "action": "ActionFor(子意圖A)", "task": "ActionForA", "topic": "info.request", "sub_plans": []}
+        return {"id": "root", "intent": norm, "type": "composite", "sub_plans": [step], "execution_logic": []}
     monkeypatch.setattr(agent.planner, "plan", fake_plan)
 
     result = agent.plan_intention("測試意圖")

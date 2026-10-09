@@ -164,3 +164,21 @@ def test_idempotency_returns_cached_on_same_key():
     # 第二次應該直接拿到 cached 第一次的結果
     assert r1["message"] == r2["message"]
     assert r2["ok"] is True
+
+
+# ----------------------------------------------------------------------
+# C-02：缺少 task 的請求必須回報失敗
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("task", [None, "", "Unknown"])
+def test_handle_missing_task_returns_failure(task):
+    agent = _info_agent()
+    payload = {"params": {}, "task_id": "T-missing"}
+    if task is not None:
+        payload["task"] = task
+    with patch.object(agent, "publish") as mock_pub:
+        result = agent._handle("info.request", _FakeParcel(payload))
+    assert result["ok"] is False
+    assert result["error"] == "missing task"
+    topic, published = mock_pub.call_args[0]
+    assert topic == TOPIC_INFO_RESULT
+    assert published["ok"] is False
