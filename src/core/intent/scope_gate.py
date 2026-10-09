@@ -8,6 +8,14 @@ class ScopeDecision:
     reason: str
 
 class ScopeGate:
+    # 功能：能否用「目前可用的 actions」完成「使用者的意圖」
+    # 輸入：使用者的意圖、目前可用的 actions
+    # 輸出：是否能執行、原因
+    # 流程：
+    # 1. 把使用者的意圖和目前可用的 actions 轉成 prompt
+    # 2. 用 LLM 判斷是否能執行
+    # 3. 回傳是否能執行、原因
+
     def __init__(self, llm, logger):
         self.llm = llm
         self.logger = logger

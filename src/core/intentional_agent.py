@@ -1,11 +1,25 @@
 # src/core/intentional_agent.py
-# IntentionalAgent: An agent that plans and executes actions based on user intentions.
+# IntentionalAgent: 規劃並執行使用者意圖。
+#
+# 重構摘要（v2）：
+# - 保留既有 plan_intention / execute_plan / _compute_execution_levels 等 API，
+#   舊測試與舊呼叫端不受影響。
+# - 新增 execute_plan_with_monitoring(plan)：完整 PRA 監測迴圈，
+#   使用 async dispatch（publish + subscribe info.result/navigation.result），
+#   支援 cancel、retry、subtree replan、root replan、預算守門。
+# - 訂閱黑板變更事件並送進 ExecutionMonitor，trigger 依規則決定再思考。
+# - on_activate 預設走監測路徑；可透過 config 關閉退回舊路徑。
+
+from __future__ import annotations
 
 import json
+import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Callable
 
 from agentflow.core.agent import Agent
+
 from src.llm.client import LLMClient
 from src.llm.tasks.intent_tasks import parse_intent
 from src.llm.schemas.intent import IntentCandidate
@@ -25,15 +39,39 @@ from src.core.intent.prompt_builder import PromptBuilder
 from src.core.intent.llm_decomposer import LLMDecomposer
 from src.core.intent.planner import RecursivePlanner
 from src.core.intent.scope_gate import ScopeGate
-from src.agents._executor_utils import resolve_request_topic, build_action_payload
+from src.agents._executor_utils import (
+    TOPIC_INFO_RESULT,
+    TOPIC_NAVIGATION_RESULT,
+    build_action_payload,
+    build_cancel_payload,
+    cancel_topic_for,
+    new_task_id,
+    resolve_request_topic,
+    result_topic_for,
+)
+from src.core.monitoring import (
+    Budget,
+    BudgetGuard,
+    ExecutionMonitor,
+    NodeState,
+    PlanCursor,
+    PlanRepair,
+    ReplanDecision,
+    ReplanTrigger,
+    TriggerKind,
+)
+from src.core.monitoring.trigger import TriggerConfig
 
 
+# ----------------------------------------------------------------------
+# IntentionalAgent
+# ----------------------------------------------------------------------
 class IntentionalAgent(Agent):
     def __init__(self, agent_config, intention: str, *, domain_profile: DomainProfile | None = None):
         self.agent_config = agent_config
         self.intention = intention
 
-        # ✅ 完全使用 gias.toml（由 get_agent_config() 讀入的 agent_config）
+        # 完全使用 gias.toml（由 get_agent_config() 讀入的 agent_config）
         self.llm = LLMClient.from_config(agent_config)
 
         self.domain = domain_profile or DomainProfile()
@@ -55,6 +93,12 @@ class IntentionalAgent(Agent):
         )
         self.scope_gate = ScopeGate(llm=self.llm, logger=logger)
 
+        # ---- 監測子系統（v2）-----------------------------------------
+        self._monitor: ExecutionMonitor | None = None
+        self._result_subs_active: bool = False
+        self._bb_subs_active: bool = False
+        self._monitor_lock_topics: set[str] = set()
+
         super().__init__("intentional_agent.gias", agent_config)
 
     @property
@@ -64,7 +108,6 @@ class IntentionalAgent(Agent):
             if kg_cfg.get("type") != "neo4j":
                 raise RuntimeError("KG type is not neo4j")
 
-            # ActionStore 需查 actions database（seed_actions_simple 寫入處）
             base = kg_cfg.get("neo4j")
             actions_overrides = kg_cfg.get("neo4j_actions")
             if not isinstance(base, dict):
@@ -76,27 +119,33 @@ class IntentionalAgent(Agent):
             self._kg = Neo4jBoltAdapter.from_config(merged, logger=logger)
         return self._kg
 
-
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
     def on_activate(self):
         plan = self.plan_intention(self.intention)
         if plan.get("type") == "leaf_unresolved":
             logger.warning("Abort: %s", plan.get("unmatched_sub_intentions"))
             self._terminate()
             return
-        result = self.execute_plan(plan)
+        if self._monitoring_enabled():
+            result = self.execute_plan_with_monitoring(plan)
+        else:
+            result = self.execute_plan(plan)
         logger.info("Plan execution finished: ok=%s", result.get("ok", False))
         self._terminate()
 
+    def _monitoring_enabled(self) -> bool:
+        cfg = self.agent_config or {}
+        m = cfg.get("intent", {}).get("monitoring") if isinstance(cfg.get("intent"), dict) else None
+        if isinstance(m, dict):
+            return bool(m.get("enabled", True))
+        return True
 
+    # ------------------------------------------------------------------
+    # break_down_intention（未變動，保留原行為）
+    # ------------------------------------------------------------------
     def break_down_intention(self, intention: str) -> list[SubIntent]:
-        """
-        將使用者意圖拆解為一層 sub-intents，並盡可能保留可落地的 slots。
-        通用性設計重點：
-        - 不在此處列舉任何特定領域詞彙
-        - 優先使用 LLM 輸出的 slots（若缺少則補上通用欄位）
-        - 明確保留原始意圖（避免被 LLM 過度抽象化）
-        - 若 LLM 輸出過度抽象（slots 幾乎空且文本與原文相似度很低），改以原文作為 sub-intent
-        """
         norm = self.domain.normalize(intention)
         logger.debug(f"Breaking down intention via LLM: {norm}")
 
@@ -104,24 +153,12 @@ class IntentionalAgent(Agent):
             return (x or "").strip()
 
         def _normalize_slots(slots: dict | None) -> dict:
-            """
-            通用 slot 清理：
-            - 只保留 dict
-            - key/value 轉成可 JSON 化的簡單型別
-            - 補上保留欄位（不列舉領域詞彙）
-            """
             s = dict(slots or {})
-            # 保留原始意圖，避免後續偷換目標時無從追溯
             s.setdefault("_source_text", norm)
-            # 可選：保留正規化後意圖
             s.setdefault("_normalized_text", norm)
             return s
 
         def _token_overlap_ratio(a: str, b: str) -> float:
-            """
-            很輕量的字元集合重疊率，用來偵測 LLM 是否把意圖抽象到失真。
-            0~1，越高代表越像。
-            """
             a = _safe_str(a)
             b = _safe_str(b)
             if not a or not b:
@@ -141,18 +178,13 @@ class IntentionalAgent(Agent):
                 desc = _safe_str(getattr(c, "description", ""))
                 slots = _normalize_slots(getattr(c, "slots", None) or {})
 
-                # canon：優先用 desc，其次 name，最後用原始 norm
                 canon = (desc or name or norm).strip()
                 canon = self.domain.normalize(canon)
 
-                # ---- 失真防護（通用）----
-                # 若 LLM 給的 canon 太抽象（與原文重疊很低）且 slots 幾乎是空的
-                # 則改回用原文 norm，避免「偷換目標」造成錯誤可執行計畫
                 slot_keys = [k for k in slots.keys() if not str(k).startswith("_")]
                 overlap = _token_overlap_ratio(norm, canon)
 
                 if (len(slot_keys) == 0) and (overlap < 0.25):
-                    # 仍保留 LLM 的 raw 供 debug，但以原文作為可執行子意圖
                     subs.append(
                         SubIntent(
                             intent=norm,
@@ -183,24 +215,16 @@ class IntentionalAgent(Agent):
             logger.exception("Failed to break down intention via LLM, fallback to normalized intention.")
             return [SubIntent(intent=norm, slots={"_source_text": norm, "_normalized_text": norm}, raw={"fallback": True})]
 
-
     def match_actions(self, intention: str, **kwargs):
         return self.matcher.match_actions(intention, **kwargs)
 
-
+    # ------------------------------------------------------------------
+    # plan_intention（與 v1 相同）
+    # ------------------------------------------------------------------
     def plan_intention(self, intention: str) -> dict[str, Any]:
-        """
-        通用規劃流程（更保守、更能拒絕）：
-        1) LLM 拆解子意圖；對每個 sub-intent 做 action match（含 slots）
-        2) selector 挑選 chosen_actions，建立 allowed_action_names
-        3) Scope Gate（可用 config 開關）：能力集合是否足以完成意圖
-        4) planner 生成 plan
-        5) Plan validation：planner 不可使用 allowed 之外的 atomic action
-        """
         norm = self.domain.normalize(intention)
         subs = self.break_down_intention(norm)
 
-        # 1) match per sub-intent
         matched_pairs, unmatched = self._match_subs(subs)
         if unmatched:
             return self._make_unresolved(
@@ -210,7 +234,6 @@ class IntentionalAgent(Agent):
                 matched=[s.intent for s, _ in matched_pairs],
             )
 
-        # 2) selector 挑選 + allowed action 白名單
         chosen_actions = self.selector.select_actions([s for s, _ in matched_pairs])
         allowed_action_names = self._extract_allowed_action_names(chosen_actions)
         if not allowed_action_names:
@@ -220,15 +243,12 @@ class IntentionalAgent(Agent):
                 matched=[s.intent for s, _ in matched_pairs],
             )
 
-        # 3) Scope Gate
         gate_reject = self._run_scope_gate(norm, subs, chosen_actions, allowed_action_names)
         if gate_reject is not None:
             return gate_reject
 
-        # 4) planner 生成 plan
         plan = self.planner.plan(norm, chosen_actions)
 
-        # 5) Plan validation
         illegal_atoms = self._find_illegal_atomic_actions(plan, allowed_action_names)
         if illegal_atoms:
             return self._make_unresolved(
@@ -252,14 +272,12 @@ class IntentionalAgent(Agent):
     # ------------------------------------------------------------------
     @staticmethod
     def _action_name_from_sig(sig: str) -> str:
-        """從 'ActionName(Param1, ...)' 取出 'ActionName'；非簽章字串原樣回傳。"""
         s = (sig or "").strip()
         return s.split("(", 1)[0].strip() if "(" in s else s
 
     def _match_subs(
         self, subs: list[SubIntent]
     ) -> tuple[list[tuple[SubIntent, list[Any]]], list[str]]:
-        """對每個 sub-intent 做 action match（帶 slots），回傳 (matched_pairs, unmatched_intents)。"""
         matched_pairs: list[tuple[SubIntent, list[Any]]] = []
         unmatched: list[str] = []
         for s in subs:
@@ -271,13 +289,11 @@ class IntentionalAgent(Agent):
         return matched_pairs, unmatched
 
     def _extract_allowed_action_names(self, chosen_actions: Any) -> set[str]:
-        """從 selector 的輸出（dict 或 list[ActionDef]）擷取 action 名稱白名單。"""
         if isinstance(chosen_actions, dict):
             return {self._action_name_from_sig(k) for k in chosen_actions if k}
         return {a.name for a in chosen_actions if getattr(a, "name", None)}
 
     def _to_basic_actions(self, chosen_actions: Any) -> list[dict[str, str]]:
-        """把 chosen_actions 轉成 ScopeGate 可吃的 [{name, description}, ...]。"""
         if isinstance(chosen_actions, dict):
             return [
                 {"name": self._action_name_from_sig(k), "description": (v or "")}
@@ -302,7 +318,6 @@ class IntentionalAgent(Agent):
         chosen_actions: Any,
         allowed_action_names: set[str],
     ) -> dict[str, Any] | None:
-        """執行 Scope Gate；通過或停用時回傳 None，被擋下時回傳 leaf_unresolved dict。"""
         if not self._scope_gate_enabled():
             return None
 
@@ -312,7 +327,6 @@ class IntentionalAgent(Agent):
                 available_actions=self._to_basic_actions(chosen_actions),
             )
         except Exception as e:
-            # 嚴格模式拒絕，否則放行（但仍記 log）
             logger.warning("Scope gate error: %s", e)
             if not bool(self.agent_config.get("intent", {}).get("scope_gate_strict", True)):
                 return None
@@ -345,7 +359,6 @@ class IntentionalAgent(Agent):
     def _find_illegal_atomic_actions(
         self, plan: dict[str, Any], allowed_action_names: set[str]
     ) -> list[dict[str, Any]]:
-        """走訪 plan 樹找出不在 allowed 集合內的 atomic action 節點。"""
         if not isinstance(plan, dict):
             return []
 
@@ -378,7 +391,6 @@ class IntentionalAgent(Agent):
         matched: list[str] | None = None,
         extra_debug: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """統一產生 leaf_unresolved 形式的回傳 dict。"""
         debug: dict[str, Any] = {"sub_intentions": [s.intent for s in subs]}
         if extra_debug:
             debug.update(extra_debug)
@@ -396,58 +408,25 @@ class IntentionalAgent(Agent):
             "debug": debug,
         }
 
-
+    # ------------------------------------------------------------------
+    # Execution level utilities（保留，仍可被外部測試呼叫）
+    # ------------------------------------------------------------------
     def _compute_execution_levels(
         self, sub_plans: list[dict], execution_logic: list[dict]
     ) -> list[list[dict]]:
-        """
-        依 execution_logic 計算執行層級（每層可並行）。
-        - Sequence(from_id, to_id): to_id 須在 from_id 完成後執行
-        - Parallel(from_id, to_id): 無依賴，同層可並行
-        回傳 list[list[dict]]：每層為可並行執行的節點清單。
-        """
-        id_to_node = {str(n.get("id", "")): n for n in sub_plans if isinstance(n, dict)}
-        if not id_to_node:
-            return [list(sub_plans)] if sub_plans else []
-
-        deps = {to_id: [] for to_id in id_to_node}
-        for rel in execution_logic or []:
-            if (rel.get("type") or "").strip().lower() == "sequence":
-                from_id = str(rel.get("from_id", ""))
-                to_id = str(rel.get("to_id", ""))
-                if from_id in id_to_node and to_id in id_to_node and from_id != to_id:
-                    deps[to_id].append(from_id)
-
-        levels: list[list[dict]] = []
-        remaining = set(id_to_node.keys())
-        while remaining:
-            ready = [nid for nid in remaining if all(d not in remaining for d in deps[nid])]
-            if not ready:
-                break
-            level = [id_to_node[nid] for nid in sorted(ready)]
-            levels.append(level)
-            for nid in ready:
-                remaining.discard(nid)
-
-        # 未在 levels 中的節點（無 id 或未納入圖）補為第一層
-        seen = {n.get("id") for level in levels for n in level}
-        orphans = [n for n in sub_plans if isinstance(n, dict) and n.get("id") not in seen]
-        if orphans:
-            levels.insert(0, orphans) if levels else levels.append(orphans)
-        return levels if levels else []
+        return PlanCursor.compute_execution_levels(sub_plans, execution_logic)
 
     def _compute_execution_order(
         self, sub_plans: list[dict], execution_logic: list[dict]
     ) -> list[dict]:
-        """相容用：將 levels 攤平為順序（供測試或 fallback）。"""
         levels = self._compute_execution_levels(sub_plans, execution_logic)
         return [n for level in levels for n in level]
 
+    # ------------------------------------------------------------------
+    # Legacy synchronous execution path（與 v1 行為一致）
+    # ------------------------------------------------------------------
     def _execute_atomic_node(self, node: dict[str, Any], *, timeout: int = 30) -> dict[str, Any]:
-        """
-        執行單一 atomic 節點，透過 publish_sync 發送 action 請求至 InfoAgent / NavigationAgent，
-        並等待處理完成後才回傳（block）。
-        """
+        """執行單一 atomic：透過 publish_sync 同步 RPC。"""
         topic = node.get("topic")
         task = node.get("task") or "Unknown"
         params = node.get("params") or {}
@@ -475,7 +454,6 @@ class IntentionalAgent(Agent):
             return {"ok": False, "result": {"payload": payload, "error": str(e)}}
 
     def _execute_node(self, node: dict[str, Any]) -> list[dict[str, Any]]:
-        """遞迴執行 plan 節點。atomic 直接執行；composite 依 levels 分層，同層並行執行。"""
         results: list[dict[str, Any]] = []
 
         if (node.get("type") == "atomic") or (node.get("is_atomic") is True):
@@ -491,7 +469,6 @@ class IntentionalAgent(Agent):
             if len(level) == 1:
                 results.extend(self._execute_node(level[0]))
             else:
-                # 同層多節點：並行執行
                 with ThreadPoolExecutor(max_workers=len(level)) as ex:
                     futures = [ex.submit(self._execute_node, child) for child in level]
                     for i, future in enumerate(futures):
@@ -510,11 +487,7 @@ class IntentionalAgent(Agent):
         return results
 
     def execute_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
-        """
-        依 plan 與 execution_logic 規範執行計畫。
-        - Sequence: from_id 完成後才執行 to_id
-        - Parallel: 無依賴，可並行
-        """
+        """同步執行 plan（與 v1 相同行為）。"""
         if plan.get("type") == "leaf_unresolved":
             logger.warning("Plan unresolved, skip execution.")
             return {"ok": False, "message": "抱歉，無法完成此意圖。", "plan": plan}
@@ -528,3 +501,316 @@ class IntentionalAgent(Agent):
             "plan": plan,
             "results": results,
         }
+
+    # ------------------------------------------------------------------
+    # Monitoring-aware execution path（v2）
+    # ------------------------------------------------------------------
+    def execute_plan_with_monitoring(
+        self,
+        plan: dict[str, Any],
+        *,
+        budget: Budget | None = None,
+        trigger_config: TriggerConfig | None = None,
+        dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
+        env_facts_provider: Callable[[], dict[str, Any]] | None = None,
+        subtree_planner: Callable[[str, dict[str, Any] | None], dict[str, Any] | None] | None = None,
+        root_planner: Callable[[str], dict[str, Any] | None] | None = None,
+    ) -> dict[str, Any]:
+        """執行 plan 並啟用監測迴圈。
+
+        Args:
+            plan: 要執行的 plan tree
+            budget: 自訂預算；不指定時依 agent_config 推算
+            trigger_config: 自訂觸發策略
+            dispatcher: 自訂 dispatch 函式（測試用），簽名 (node, payload) -> None。
+                若不指定，使用 self.publish 對 broker 派工。
+            env_facts_provider: 取得當下環境事實的函式（給 trigger / planner_callback 用）
+            subtree_planner: 子樹重生函式 (sub_intent, env_facts) -> plan dict
+            root_planner: 根層重生函式 (intent) -> plan dict
+        """
+        if plan.get("type") == "leaf_unresolved":
+            logger.warning("Plan unresolved, skip execution.")
+            return {"ok": False, "message": "抱歉，無法完成此意圖。", "plan": plan}
+
+        logger.debug("Starting monitored plan execution.")
+
+        # 1) 建立 cursor / monitor / guard / trigger / repair
+        cursor = PlanCursor(plan)
+        budget = budget or self._build_budget()
+        guard = BudgetGuard(budget)
+        monitor = self._ensure_monitor()
+        trigger = ReplanTrigger(
+            config=trigger_config,
+            budget_guard=guard,
+            llm=self.llm,
+            logger=logger,
+        )
+        repair = PlanRepair(
+            budget_guard=guard,
+            planner_callback=subtree_planner or self._default_subtree_planner,
+            root_planner_callback=root_planner or self._default_root_planner,
+            env_facts_provider=env_facts_provider,
+            logger=logger,
+        )
+
+        # 2) 確保訂閱 result topics（若 broker 已連線）
+        self._ensure_result_subscriptions()
+
+        # 3) 主迴圈
+        loop_intent = plan.get("intent") or self.intention
+        idle_polls = 0
+        while not cursor.done() and not guard.exhausted():
+            # 3a) drain inbox
+            changes = monitor.drain_changes()
+            results = monitor.drain_results()
+
+            # 3b) 把 results 套回 cursor
+            for ar in results:
+                rec = cursor.find_by_task_id(ar.task_id)
+                if rec is None:
+                    continue
+                cursor.accept_action_result(ar.task_id, {
+                    "task_id": ar.task_id,
+                    "ok": ar.ok,
+                    "cancelled": ar.cancelled,
+                    "error": ar.error,
+                    "message": ar.message,
+                    "result": ar.result,
+                    "task": ar.task,
+                })
+
+            # 3c) 諮詢 trigger
+            decision = trigger.decide(
+                action_results=results,
+                env_changes=changes,
+                cursor=cursor,
+                intent=loop_intent,
+            )
+            if decision.kind == TriggerKind.ABORT:
+                logger.warning("Trigger ABORT: %s", decision.reason)
+                self._cancel_in_flight(cursor, reason=f"abort:{decision.reason}", dispatcher=dispatcher)
+                break
+            if decision.is_actionable():
+                self._cancel_in_flight_for_decision(cursor, decision, dispatcher=dispatcher)
+                outcome = repair.apply(decision, cursor, intent=loop_intent)
+                logger.info("Repair outcome: %s", outcome)
+
+            # 3d) 派工 ready atomics
+            ready = cursor.next_ready_atomics()
+            dispatched_now = 0
+            for rec in ready:
+                self._dispatch_atomic(rec, cursor, monitor, dispatcher=dispatcher, budget=budget)
+                dispatched_now += 1
+
+            # 3e) 等待信號或 idle 自旋限制
+            if dispatched_now == 0 and not changes and not results:
+                got = monitor.wait_for_signal(timeout=budget.poll_interval_sec)
+                if not got:
+                    idle_polls += 1
+                    # 避免無限 idle（例如 dispatcher 是 mock 但忘了回傳）：
+                    # 若所有 atomic 皆 IN_FLIGHT 而沒有任何結果，繼續等；
+                    # 若全 PENDING 也沒人 dispatch 成功，視為卡住 → ABORT
+                    if idle_polls >= 5 and not any(
+                        r.state == NodeState.IN_FLIGHT for r in cursor.all_records()
+                    ):
+                        logger.warning("Monitoring loop idle with no in-flight tasks; aborting.")
+                        break
+                else:
+                    idle_polls = 0
+
+        # 4) 收尾
+        summary = cursor.summary()
+        summary["budget"] = guard.snapshot()
+        summary["message"] = "執行完成。" if summary.get("ok") else "部分執行失敗或被中斷。"
+        return summary
+
+    # ------------------------------------------------------------------
+    # Monitoring helpers
+    # ------------------------------------------------------------------
+    def _build_budget(self) -> Budget:
+        cfg = self.agent_config or {}
+        m = cfg.get("intent", {}).get("monitoring") if isinstance(cfg.get("intent"), dict) else {}
+        if not isinstance(m, dict):
+            m = {}
+        return Budget(
+            max_replans=int(m.get("max_replans", 3)),
+            max_retries_per_node=int(m.get("max_retries_per_node", 1)),
+            deadline_sec=m.get("deadline_sec"),
+            poll_interval_sec=float(m.get("poll_interval_sec", 0.2)),
+            cancel_grace_sec=float(m.get("cancel_grace_sec", 3.0)),
+        )
+
+    def _ensure_monitor(self) -> ExecutionMonitor:
+        if self._monitor is None:
+            self._monitor = ExecutionMonitor(logger=logger)
+        return self._monitor
+
+    def _ensure_result_subscriptions(self) -> None:
+        """訂閱 info.result / navigation.result；可重入。
+
+        broker 尚未連線時（例如測試環境）會吞下例外，由 dispatcher 直接餵 monitor。
+        """
+        if self._result_subs_active:
+            return
+        monitor = self._ensure_monitor()
+        for t in (TOPIC_INFO_RESULT, TOPIC_NAVIGATION_RESULT):
+            try:
+                self.subscribe(t, "dict", monitor.on_action_result)
+            except Exception as e:
+                logger.debug("subscribe %s failed: %s", t, e)
+        self._result_subs_active = True
+
+    def _dispatch_atomic(
+        self,
+        rec,
+        cursor: PlanCursor,
+        monitor: ExecutionMonitor,
+        *,
+        dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None,
+        budget: Budget,
+    ) -> None:
+        node = rec.node
+        topic_raw = node.get("topic")
+        topic_name = resolve_request_topic(topic_raw)
+        task_id = new_task_id(prefix=str(rec.node_id))
+        cursor.mark_dispatched(rec.node_id, task_id=task_id)
+        monitor.bind_task(task_id, rec.node_id)
+
+        payload = build_action_payload(
+            task=node.get("task") or "Unknown",
+            params=node.get("params") or {},
+            action_id=node.get("action_id"),
+            intent=node.get("intent", ""),
+            task_id=task_id,
+            idempotency_key=f"{rec.node_id}:{rec.attempts}",
+            deadline_sec=node.get("deadline_sec"),
+            interruptible=node.get("interruptible"),
+            side_effect=node.get("side_effect"),
+        )
+
+        try:
+            if dispatcher is not None:
+                dispatcher(node, payload)
+            else:
+                self.publish(topic_name, payload)
+            logger.info(
+                "Dispatched atomic: node=%s task=%s topic=%s task_id=%s",
+                rec.node_id, payload["task"], topic_name, task_id,
+            )
+        except Exception as e:
+            logger.warning("Dispatch failed: node=%s err=%s", rec.node_id, e)
+            cursor.mark_failed(rec.node_id, str(e), result={"payload": payload, "error": str(e)})
+            monitor.unbind_task(task_id)
+
+    def _cancel_in_flight(
+        self,
+        cursor: PlanCursor,
+        *,
+        reason: str,
+        dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None,
+    ) -> None:
+        """送 cancel 給目前仍在 IN_FLIGHT 的所有 task。"""
+        for rec in cursor.all_records():
+            if rec.state != NodeState.IN_FLIGHT or not rec.task_id:
+                continue
+            self._send_cancel(rec, reason=reason, dispatcher=dispatcher)
+            cursor.cancel_in_flight(rec.node_id, reason=reason)
+
+    def _cancel_in_flight_for_decision(
+        self,
+        cursor: PlanCursor,
+        decision: ReplanDecision,
+        *,
+        dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None,
+    ) -> None:
+        """根據決策決定要對哪些 IN_FLIGHT 節點送 cancel。
+
+        - RETRY_NODE / REPAIR_NODE：affected_node_ids
+        - REPLAN_SUBTREE：composite 內所有 IN_FLIGHT
+        - REPLAN_ROOT：全部 IN_FLIGHT
+        """
+        if decision.kind == TriggerKind.REPLAN_ROOT:
+            self._cancel_in_flight(cursor, reason="replan_root", dispatcher=dispatcher)
+            return
+
+        targets: set[str] = set()
+        if decision.kind in (TriggerKind.RETRY_NODE, TriggerKind.REPAIR_NODE):
+            targets.update(decision.affected_node_ids)
+        elif decision.kind == TriggerKind.REPLAN_SUBTREE and decision.subtree_root_id:
+            composite = cursor.composite_node(decision.subtree_root_id)
+            if isinstance(composite, dict):
+                # collect atomic ids inside this composite
+                stack = [composite]
+                while stack:
+                    n = stack.pop()
+                    if not isinstance(n, dict):
+                        continue
+                    if n.get("type") == "atomic" or n.get("is_atomic") is True:
+                        nid = n.get("id")
+                        if nid:
+                            targets.add(str(nid))
+                    else:
+                        stack.extend(n.get("sub_plans") or [])
+        for nid in targets:
+            rec = cursor.record(nid)
+            if rec is None or rec.state != NodeState.IN_FLIGHT or not rec.task_id:
+                continue
+            self._send_cancel(rec, reason=f"decision:{decision.kind.value}", dispatcher=dispatcher)
+            cursor.cancel_in_flight(nid, reason=decision.kind.value)
+
+    def _send_cancel(
+        self,
+        rec,
+        *,
+        reason: str,
+        dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None,
+    ) -> None:
+        topic_name = resolve_request_topic(rec.node.get("topic"))
+        cancel_topic = cancel_topic_for(topic_name)
+        payload = build_cancel_payload(task_id=rec.task_id or "", reason=reason)
+        try:
+            if dispatcher is not None:
+                # dispatcher 可選擇是否也處理 cancel：簽名 (node, payload)
+                # 為了向後相容，這裡僅嘗試呼叫 dispatcher 並把 cancel 註記在 payload
+                cancel_node = dict(rec.node)
+                cancel_node["_cancel"] = True
+                cancel_node["_cancel_topic"] = cancel_topic
+                dispatcher(cancel_node, payload)
+            else:
+                self.publish(cancel_topic, payload)
+            logger.info("Cancel sent: node=%s task_id=%s reason=%s", rec.node_id, rec.task_id, reason)
+        except Exception as e:
+            logger.warning("Cancel publish failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # Default planner callbacks（接到 RecursivePlanner）
+    # ------------------------------------------------------------------
+    def _default_subtree_planner(
+        self, sub_intent: str, env_facts: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """REPLAN_SUBTREE 預設實作：以 sub_intent 走一遍 plan_intention。
+
+        環境事實預留為未來 prompt 強化（目前不直接注入，避免污染既有 prompt）。
+        """
+        if not sub_intent:
+            return None
+        try:
+            sub_plan = self.plan_intention(sub_intent)
+        except Exception as e:
+            logger.warning("Subtree planning failed: %s", e)
+            return None
+        if sub_plan.get("type") == "leaf_unresolved":
+            return None
+        return sub_plan
+
+    def _default_root_planner(self, intent: str) -> dict[str, Any] | None:
+        if not intent:
+            return None
+        try:
+            new_plan = self.plan_intention(intent)
+        except Exception as e:
+            logger.warning("Root planning failed: %s", e)
+            return None
+        if new_plan.get("type") == "leaf_unresolved":
+            return None
+        return new_plan

@@ -223,7 +223,7 @@ class BlackboardAgent(Agent):
 
         try:
             result = self.kg.write(cypher, params)
-            logger.info("BlackboardAgent write by %s: %s", origin_id, cypher[:100])
+            logger.verbose("BlackboardAgent write by %s: %s", origin_id, cypher[:100])
             return {"ok": True, "result": result}
         except Exception as e:
             logger.warning("BlackboardAgent write error: %s", e)
