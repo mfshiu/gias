@@ -49,8 +49,8 @@
 
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
-| **V-01** | 實驗驗證 | 導航實驗完全沒呼叫 IntentionalAgent，改用 Dijkstra 模擬，失敗則依 `replan_failure_probability` 隨機注入 | [runner.py:18](../navigation_scenario/runner.py#L18) | TSR 95%、RSR 80.9% 量到的是圖演算法，不是 GIAS 的重規劃 | 已修正（尚未在真實服務上執行） |
-| **V-02** | 實驗驗證 | 核心的監測執行路徑 `execute_plan_with_monitoring` 只有 mock 單元測試，沒有任何端到端實驗跑過 | [intentional_agent.py:508](../src/core/intentional_agent.py#L508) | 「監控與重新考慮」這項主張缺乏實驗支持 | 已修正（尚未在真實服務上執行） |
+| **V-01** | 實驗驗證 | 導航實驗完全沒呼叫 IntentionalAgent，改用 Dijkstra 模擬，失敗則依 `replan_failure_probability` 隨機注入 | [runner.py:18](../navigation_scenario/runner.py#L18) | TSR 95%、RSR 80.9% 量到的是圖演算法，不是 GIAS 的重規劃 | 已修正（736c1b6；尚未在真實服務上執行） |
+| **V-02** | 實驗驗證 | 核心的監測執行路徑 `execute_plan_with_monitoring` 只有 mock 單元測試，沒有任何端到端實驗跑過 | [intentional_agent.py:508](../src/core/intentional_agent.py#L508) | 「監控與重新考慮」這項主張缺乏實驗支持 | 已修正（736c1b6；尚未在真實服務上執行） |
 | **L-01** | 閉環／監測 | 黑板環境事件沒有接進監測器：全 repo 沒有地方訂閱 `on_env_event`，`_bb_subs_active` 也從未使用（檔頭註解宣稱有訂閱） | [monitor.py:52](../src/core/monitoring/monitor.py#L52)、[intentional_agent.py:99](../src/core/intentional_agent.py#L99) | 環境改變永遠不會觸發重規劃，系統只對動作失敗反應，閉環沒有成立 | 已修正（3b4495c） |
 | **C-01** | 正確性 | 巢狀計畫的節點 ID 衝突：LLM 每層都從 "1" 開始編號，cursor 遇到重複 ID 就靜默略過（已實測重現，見附錄） | [planner.py:145](../src/core/intent/planner.py#L145)、[cursor.py:105](../src/core/monitoring/cursor.py#L105) | 子任務沒被執行，最後卻回報 `ok=True` | 已修正（8b0cbce） |
 | **C-02** | 正確性 | 沒有 action 或 topic 的 atomic 節點（`leaf_no_children`、`leaf_forced_atomic`，或 action 為空字串的節點）會繞過白名單檢查，被預設送到 `info.request`，而 InfoAgent 對未知 task 一律回成功 | [planner.py:122](../src/core/intent/planner.py#L122)、[planner.py:139](../src/core/intent/planner.py#L139)、[_executor_utils.py:55](../src/agents/_executor_utils.py#L55)、[info_agent.py:200](../src/agents/info_agent.py#L200) | 根本無法執行的步驟被記為成功（假成功） | 已修正（8b0cbce） |
@@ -150,7 +150,7 @@
 - 節點與環境事件的對應仍是子字串比對（C-08），區域 ID 與中文名稱寫法不同時需靠 LLM 輔助判斷。
 
 
-### 2026-10-09：V-01、V-02
+### 2026-10-09：V-01、V-02（commit 736c1b6）
 
 | 編號 | 修正內容 | 主要檔案 |
 |---|---|---|
