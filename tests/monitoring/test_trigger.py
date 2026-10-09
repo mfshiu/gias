@@ -264,3 +264,71 @@ def test_llm_max_calls_caps_consultations():
     for _ in range(3):
         t.decide(action_results=[], env_changes=[change], cursor=c)
     assert len(decider.calls) == 1
+
+
+# ----------------------------------------------------------------------
+# C-08：以完整名稱比對環境事件與節點（不用子字串）
+# ----------------------------------------------------------------------
+def _booth_plan(*targets) -> dict:
+    return {
+        "id": "root", "type": "composite", "execution_logic": [],
+        "sub_plans": [
+            {"id": f"n{i}", "type": "atomic", "is_atomic": True, "task": "LocateExhibit",
+             "intent": f"前往 {t}", "params": {"target_name": t, "current_location": "P_Entrance"},
+             "sub_plans": []}
+            for i, t in enumerate(targets, start=1)
+        ],
+    }
+
+
+def _booth_event(booth_id: str) -> EnvChange:
+    return EnvChange(topic=f"Booth/{booth_id}/status", action="update", new_value="closed",
+                     metadata={"label": "Booth", "node_id": booth_id, "property": "status"})
+
+
+def test_booth_event_does_not_match_longer_id():
+    """舊行為："A1" in "前往 A12" 為 True → 不必要的子樹重規劃。"""
+    c = PlanCursor(_booth_plan("A12"))
+    t = ReplanTrigger(config=TriggerConfig(relevant_topic_prefixes=("Booth/",)), budget_guard=BudgetGuard())
+    assert t.decide(action_results=[], env_changes=[_booth_event("A1")], cursor=c).kind == TriggerKind.NONE
+
+
+def test_booth_event_matches_exact_id_only():
+    c = PlanCursor(_booth_plan("A12", "A1"))
+    t = ReplanTrigger(config=TriggerConfig(relevant_topic_prefixes=("Booth/",)), budget_guard=BudgetGuard())
+    decision = t.decide(action_results=[], env_changes=[_booth_event("A1")], cursor=c)
+    assert decision.kind == TriggerKind.REPLAN_SUBTREE
+    assert decision.affected_node_ids == ("n2",)
+
+
+def test_zone_event_matches_alias_and_contained_booth():
+    c = PlanCursor(_booth_plan("AI 展區", "TechCorp AI", "B_VR1"))
+    cfg = TriggerConfig(
+        relevant_topic_prefixes=("Zone/",),
+        entity_aliases={"AI_Tech_Area": ["AI 展區"], "B_AI1": ["TechCorp AI"]},
+        entity_parents={"B_AI1": "AI_Tech_Area", "B_VR1": "VR_Area"},
+    )
+    change = EnvChange(topic="Zone/CURRENT_STATE/State", action="create",
+                       metadata={"source_id": "AI_Tech_Area", "rel_type": "CURRENT_STATE", "target_id": "Closed"})
+    decision = ReplanTrigger(config=cfg, budget_guard=BudgetGuard()).decide(
+        action_results=[], env_changes=[change], cursor=c)
+    assert decision.kind == TriggerKind.REPLAN_SUBTREE
+    assert decision.affected_node_ids == ("n1", "n2")
+
+
+def test_origin_parameter_is_ignored():
+    """步驟的出發點不代表依賴該地點：入口所在區的事件不應觸發重規劃。"""
+    c = PlanCursor(_booth_plan("B_VR1"))
+    cfg = TriggerConfig(relevant_topic_prefixes=("Zone/",), entity_parents={"P_Entrance": "Main_Hall"})
+    change = EnvChange(topic="Zone/Main_Hall/crowd_level", action="update", new_value="Crowded",
+                       metadata={"label": "Zone", "node_id": "Main_Hall", "property": "crowd_level"})
+    t = ReplanTrigger(config=cfg, budget_guard=BudgetGuard())
+    assert t.decide(action_results=[], env_changes=[change], cursor=c).kind == TriggerKind.NONE
+
+
+def test_relationship_name_in_topic_is_not_an_entity():
+    c = PlanCursor(_booth_plan("CURRENT_STATE"))
+    change = EnvChange(topic="Zone/CURRENT_STATE/State", action="create",
+                       metadata={"source_id": "VR_Area", "rel_type": "CURRENT_STATE", "target_id": "Closed"})
+    t = ReplanTrigger(config=TriggerConfig(relevant_topic_prefixes=("Zone/",)), budget_guard=BudgetGuard())
+    assert t.decide(action_results=[], env_changes=[change], cursor=c).kind == TriggerKind.NONE

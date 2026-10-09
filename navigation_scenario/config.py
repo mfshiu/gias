@@ -156,6 +156,74 @@ STATE_SPARSE = "Sparse"
 
 
 # =============================================================================
+# 自然語言對應（給 test cases 用）
+# =============================================================================
+
+ZONE_LABELS: dict[str, str] = {
+    "Main_Hall":      "主大廳",
+    "AI_Tech_Area":   "AI 展區",
+    "Robotics_Area":  "機器人展區",
+    "Gaming_Area":    "遊戲展區",
+    "VR_Area":        "VR 展區",
+    "IoT_Area":       "IoT 展區",
+    "Biotech_Area":   "生技展區",
+    "Startup_Area":   "新創展區",
+    "Food_Court":     "美食區",
+    "Exit_Hall":      "出口大廳",
+}
+
+
+# =============================================================================
+# live 模式：嚮導機器人（GuideAgent）
+# =============================================================================
+
+# 機器人在 Blackboard 上的 Agent.agent_id（env_fact_queries 的 robot_position 依此查詢）
+GUIDE_ROBOT_ID = "guide_robot"
+
+# 設施類型 → 可前往的 POI（LocateFacility 會選最近的一個）
+FACILITY_POIS: dict[str, list[str]] = {
+    "restroom": ["P_Restroom_N", "P_Restroom_S"],
+    "exit": ["P_Exit"],
+    "service_desk": ["P_Info"],
+    "accessible": ["P_Info"],
+}
+
+# 中文說法 → POI（解析 LLM 給的目的地文字用）
+POI_ALIASES: dict[str, str] = {
+    "咖啡廳": "P_Cafe",
+    "咖啡": "P_Cafe",
+    "出口": "P_Exit",
+    "服務台": "P_Info",
+    "詢問處": "P_Info",
+    "入口": "P_Entrance",
+    "北側洗手間": "P_Restroom_N",
+    "南側洗手間": "P_Restroom_S",
+}
+
+
+# =============================================================================
+# 實體別名與從屬（ReplanTrigger 判斷環境事件影響哪些步驟用）
+# =============================================================================
+def _entity_aliases() -> dict[str, list[str]]:
+    """實體 id → 其他稱呼（中文名稱、攤位廠商名、POI 名稱）。"""
+    aliases: dict[str, list[str]] = {zone: [label] for zone, label in ZONE_LABELS.items()}
+    for booth in BOOTHS:
+        aliases[booth["id"]] = [booth["exhibitor"]]
+    for poi in POIS:
+        aliases[poi["id"]] = [poi["name"]]
+    for alias, poi_id in POI_ALIASES.items():
+        # 「入口」幾乎都是出發點而非目的地；列為別名會讓出發區的事件觸發不必要的重規劃
+        if alias != "入口":
+            aliases.setdefault(poi_id, []).append(alias)
+    return aliases
+
+
+def _entity_parents() -> dict[str, str]:
+    """攤位 / POI → 所在 zone：zone 的事件也會影響前往區內攤位的步驟。"""
+    return {item["id"]: item["zone"] for item in [*BOOTHS, *POIS]}
+
+
+# =============================================================================
 # Domain Profile（Navigation 專用）
 # =============================================================================
 
@@ -218,6 +286,8 @@ NAVIGATION_PROFILE = DomainProfile(
             "無障礙": "accessible",
         },
     },
+    entity_aliases=_entity_aliases(),
+    entity_parents=_entity_parents(),
     # live 模式：執行期間監看的黑板變動（Zone 人潮/封閉、Booth 開放狀態）
     env_subscriptions=["Zone/*/*", "Booth/*/*"],
     # live 模式：重規劃時提供給 LLM 的環境事實
@@ -241,52 +311,6 @@ NAVIGATION_PROFILE = DomainProfile(
         ),
     },
 )
-
-
-# =============================================================================
-# live 模式：嚮導機器人（GuideAgent）
-# =============================================================================
-
-# 機器人在 Blackboard 上的 Agent.agent_id（env_fact_queries 的 robot_position 依此查詢）
-GUIDE_ROBOT_ID = "guide_robot"
-
-# 設施類型 → 可前往的 POI（LocateFacility 會選最近的一個）
-FACILITY_POIS: dict[str, list[str]] = {
-    "restroom": ["P_Restroom_N", "P_Restroom_S"],
-    "exit": ["P_Exit"],
-    "service_desk": ["P_Info"],
-    "accessible": ["P_Info"],
-}
-
-# 中文說法 → POI（解析 LLM 給的目的地文字用）
-POI_ALIASES: dict[str, str] = {
-    "咖啡廳": "P_Cafe",
-    "咖啡": "P_Cafe",
-    "出口": "P_Exit",
-    "服務台": "P_Info",
-    "詢問處": "P_Info",
-    "入口": "P_Entrance",
-    "北側洗手間": "P_Restroom_N",
-    "南側洗手間": "P_Restroom_S",
-}
-
-
-# =============================================================================
-# 自然語言對應（給 test cases 用）
-# =============================================================================
-
-ZONE_LABELS: dict[str, str] = {
-    "Main_Hall":      "主大廳",
-    "AI_Tech_Area":   "AI 展區",
-    "Robotics_Area":  "機器人展區",
-    "Gaming_Area":    "遊戲展區",
-    "VR_Area":        "VR 展區",
-    "IoT_Area":       "IoT 展區",
-    "Biotech_Area":   "生技展區",
-    "Startup_Area":   "新創展區",
-    "Food_Court":     "美食區",
-    "Exit_Hall":      "出口大廳",
-}
 
 
 # 導航類 action：metrics / plan 檢查時用

@@ -26,6 +26,7 @@ from .events import (
     TriggerKind,
 )
 from .cursor import PlanCursor
+from .entity_match import EntityMatcher
 
 
 @dataclass(slots=True)
@@ -40,6 +41,11 @@ class TriggerConfig:
     abort_after_obsolete: int = 8             # 累積 OBSOLETE 達此值即 ABORT
     relevant_topic_prefixes: tuple[str, ...] = ("Zone/", "Booth/")
     llm_max_calls: int = 10                   # 一個 plan 最多諮詢 LLM 幾次（控制成本與延遲）
+    # 判斷環境事件影響哪些節點（見 entity_match）：實體別名、實體所在的上層實體
+    entity_aliases: dict[str, list[str]] = field(default_factory=dict)
+    entity_parents: dict[str, str] = field(default_factory=dict)
+    # 比對時忽略的參數：步驟的出發點不代表該步驟依賴那個地點
+    ignored_param_keys: tuple[str, ...] = ("current_location",)
 
 
 class ReplanTrigger:
@@ -63,6 +69,7 @@ class ReplanTrigger:
         self._llm_decider = llm_decider
         self._llm_calls = 0
         self._llm_cap_logged = False
+        self._entities = EntityMatcher(self.config.entity_aliases, self.config.entity_parents)
 
     # ------------------------------------------------------------------
     # 入口
@@ -256,39 +263,36 @@ class ReplanTrigger:
         return ReplanDecision.none()
 
     def _find_affected_nodes(self, changes: list[EnvChange], cursor: PlanCursor) -> list:
-        affected = []
-        # 抓出變動裡涉及的 zone / booth 名稱
-        keywords = set()
+        """找出提到變動實體的 PENDING / IN_FLIGHT 節點（以完整名稱比對，不用子字串）。"""
+        entities: set[str] = set()
         for c in changes:
-            # topic 結構：Zone/<name>/<prop> 或 Booth/<id>/<prop>
-            parts = c.topic.split("/")
-            if len(parts) >= 2 and parts[1]:
-                keywords.add(parts[1])
-            # 也吃 metadata 中的線索；BlackboardWatcher 的節點事件帶 node_id，
-            # 關係事件（如 Zone/CURRENT_STATE/State）帶 source_id
             md = c.metadata or {}
+            # topic 結構：Zone/<name>/<prop> 或 Booth/<id>/<prop>；
+            # 關係事件的中段是關係名稱（如 Zone/CURRENT_STATE/State），不是實體
+            parts = c.topic.split("/")
+            if len(parts) >= 2 and parts[1] and parts[1] != "*" and not md.get("rel_type"):
+                entities.add(parts[1])
+            # BlackboardWatcher 的節點事件帶 node_id，關係事件帶 source_id
             for key in ("zone", "booth_id", "zone_name", "target", "node_id", "source_id"):
                 v = md.get(key)
                 if isinstance(v, str) and v:
-                    keywords.add(v)
-        if not keywords:
-            return affected
+                    entities.add(v)
+        if not entities:
+            return []
+        affected = []
         for rec in cursor.all_records():
             if rec.state not in (NodeState.PENDING, NodeState.IN_FLIGHT):
                 continue
-            blob = self._node_search_blob(rec.node)
-            for kw in keywords:
-                if kw and kw in blob:
-                    affected.append(rec)
-                    break
+            text = self._node_search_blob(rec.node)
+            if any(self._entities.mentions(text, entity) for entity in entities):
+                affected.append(rec)
         return affected
 
-    @staticmethod
-    def _node_search_blob(node: dict[str, Any]) -> str:
+    def _node_search_blob(self, node: dict[str, Any]) -> str:
         parts = [str(node.get("intent", "")), str(node.get("task", ""))]
         params = node.get("params") or {}
         if isinstance(params, dict):
-            parts.extend(str(v) for v in params.values())
+            parts.extend(str(v) for k, v in params.items() if k not in self.config.ignored_param_keys)
         return " ".join(parts)
 
     def _spans_multiple_composites(self, recs: list, cursor: PlanCursor) -> bool:

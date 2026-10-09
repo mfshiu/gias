@@ -3,7 +3,7 @@
 - **建立日期**：2026-10-09
 - **分析基準**：`main` @ `51ea57f`，加上工作目錄中尚未 commit 的修改（含 v2 監測子系統 `src/core/monitoring/`）
 - **測試現況**：離線單元測試（`tests/monitoring`、`tests/navigation_scenario`、`tests/agents`、`tests/test_execute_plan_with_monitoring.py`）共 548 個，全部通過
-- **總數**：42 項（嚴重 5／高 11／中 15／低 11）
+- **總數**：43 項（嚴重 5／高 12／中 15／低 11；C-10 為修 C-08 時發現並一併修正）
 
 ## 編號與分級規則
 
@@ -35,13 +35,13 @@
 |---|---|---|---|---|
 | **V** 實驗驗證 | V-01, V-02 | V-03, V-04, V-05 | V-06 | — |
 | **L** 閉環／監測 | L-01 | L-02, L-03 | L-04 | L-05 |
-| **C** 正確性 | C-01, C-02 | C-03, C-04 | C-05 ~ C-08 | C-09 |
+| **C** 正確性 | C-01, C-02 | C-03, C-04, C-10 | C-05 ~ C-08 | C-09 |
 | **A** 架構與論文主張的落差 | — | A-01, A-02 | A-03, A-04 | — |
 | **P** 效能與成本 | — | — | P-01 ~ P-03 | P-04, P-05 |
 | **G** 通用性與耦合 | — | — | G-01, G-02 | G-03 |
 | **S** 安全 | — | S-01 | S-02, S-03 | S-04 |
 | **E** 工程品質 | — | E-01 | — | E-02 ~ E-06 |
-| **合計** | **5** | **11** | **15** | **11** |
+| **合計** | **5** | **12** | **15** | **11** |
 
 ---
 
@@ -55,7 +55,7 @@
 | **C-01** | 正確性 | 巢狀計畫的節點 ID 衝突：LLM 每層都從 "1" 開始編號，cursor 遇到重複 ID 就靜默略過（已實測重現，見附錄） | [planner.py:145](../src/core/intent/planner.py#L145)、[cursor.py:105](../src/core/monitoring/cursor.py#L105) | 子任務沒被執行，最後卻回報 `ok=True` | 已修正（8b0cbce） |
 | **C-02** | 正確性 | 沒有 action 或 topic 的 atomic 節點（`leaf_no_children`、`leaf_forced_atomic`，或 action 為空字串的節點）會繞過白名單檢查，被預設送到 `info.request`，而 InfoAgent 對未知 task 一律回成功 | [planner.py:122](../src/core/intent/planner.py#L122)、[planner.py:139](../src/core/intent/planner.py#L139)、[_executor_utils.py:55](../src/agents/_executor_utils.py#L55)、[info_agent.py:200](../src/agents/info_agent.py#L200) | 根本無法執行的步驟被記為成功（假成功） | 已修正（8b0cbce） |
 
-## 二、高（11 項）
+## 二、高（12 項）
 
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
@@ -66,6 +66,7 @@
 | **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（3b4495c） |
 | **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（8b0cbce） |
 | **C-04** | 正確性 | 節點沒有逾時機制，`deadline_sec` 預設為 None | [intentional_agent.py:613](../src/core/intentional_agent.py#L613)、[budget.py:20](../src/core/monitoring/budget.py#L20) | 執行端掛掉或訊息遺失時，迴圈會永遠等待 | 已修正（8b0cbce） |
+| **C-10** | 正確性 | 環境事件或失敗觸發子樹／整體重規劃時，先取消執行中的步驟才產生新計畫；重規劃失敗時被取消的步驟被標為 OBSOLETE 而無聲丟棄，且 OBSOLETE 不計入成敗，可能回報成功 | [intentional_agent.py:`_apply_decision`](../src/core/intentional_agent.py) | 「先去 A 再去 B」：往 A 的途中重規劃失敗，A 被丟掉、B 完成後仍回報 ok=True | 已修正 |
 | **A-01** | 架構落差 | 意圖只是一個字串：沒有 Intention 模型和生命週期狀態，不支援多意圖、優先序或衝突管理，Agent 執行完就結束 | [intentional_agent.py:70](../src/core/intentional_agent.py#L70)、[intentional_agent.py:136](../src/core/intentional_agent.py#L136) | 「跨時間維持意圖」與 Bratman 意圖理論的主張沒有落實 | 未處理 |
 | **A-02** | 架構落差 | 前置條件驗證沒有實作：Action KG 沒有前置條件和效果，`preconditions_by_action`、`conflicts_between_intents` 已寫好卻從未被呼叫 | [queries.py:211](../src/kg/queries.py#L211)、[queries.py:233](../src/kg/queries.py#L233) | 摘要所說「KG-RAG 提供前置條件驗證」與程式不符；LLM 產生的計畫沒有符號層面的驗證 | 未處理 |
 | **S-01** | 安全 | `blackboard.control` 會執行任何 MQTT 用戶端送來的 Cypher，沒有白名單也沒有權限控管 | [blackboard/agent.py:212](../src/blackboard/agent.py#L212)、[blackboard/agent.py:232](../src/blackboard/agent.py#L232) | 任何連得上 broker 的人都能讀取或刪除整個黑板 | 未處理 |
@@ -80,7 +81,7 @@
 | **C-05** | 正確性 | 有依賴循環時，相關節點會被當成孤兒放到第一層先執行，而且沒有警告 | [cursor.py:191](../src/core/monitoring/cursor.py#L191) | 違反執行順序 | 未處理 |
 | **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 未處理 |
 | **C-07** | 正確性 | 參數用正規表示式從 LLM 字串解析，不依 `params_schema` 驗證型別、enum 或必填 | [planner.py:23](../src/core/intent/planner.py#L23) | 例如 `Interests=null` 會被當成字串 "null" 傳下去 | 未處理 |
-| **C-08** | 正確性 | 判斷環境事件影響哪些節點時用子字串比對 | [trigger.py:219](../src/core/monitoring/trigger.py#L219) | "A1" 會誤中 "A12"，觸發不必要的重規劃 | 未處理 |
+| **C-08** | 正確性 | 判斷環境事件影響哪些節點時用子字串比對 | [trigger.py:219](../src/core/monitoring/trigger.py#L219) | "A1" 會誤中 "A12"，觸發不必要的重規劃 | 已修正 |
 | **A-03** | 架構落差 | 步驟之間不能傳遞資料，也沒有把結果彙整回覆給使用者的步驟 | [planner.py:161](../src/core/intent/planner.py#L161) | 多步驟任務無法串接，例如「推薦展品」的結果傳不到「規劃路線」 | 未處理 |
 | **A-04** | 架構落差 | 同一個意圖被 LLM 拆兩次：`parse_intent` 的結果只用來比對動作，planner 又重新拆一次 | [intentional_agent.py:226](../src/core/intentional_agent.py#L226)、[intentional_agent.py:250](../src/core/intentional_agent.py#L250) | 兩次結果可能不一致，成本也加倍 | 未處理 |
 | **P-01** | 效能 | `select_actions` 不帶 slots 又比對一次，而且每個動作都再查一次 KG（N+1 查詢） | [action_selector.py:59](../src/core/intent/action_selector.py#L59)、[action_selector.py:32](../src/core/intent/action_selector.py#L32) | 規劃延遲變長，embedding 費用增加 | 未處理 |
@@ -165,6 +166,18 @@
 - `single_10_*`（「請帶我去最近的洗手間」）預期目標是 `P_Restroom_N`，但從入口出發最近的是 `P_Restroom_S`（52 m vs 72 m）；live 模式中機器人若正確走到最近的洗手間會被判為失敗。
 - `analyze._load_case_metrics` 讀檔時沒有載入 `segment_baselines` / `segment_actuals`，報告裡的 PE 實際上是總距離比，而不是 `metrics.py` 定義的逐段平均。
 - V-06 部分改善：live 模式的 GuideAgent 依 Blackboard 實際計算路線；預設的 NavigationAgent / InfoAgent 仍是固定訊息的模擬。
+
+
+### 2026-10-09：C-08、C-10
+
+| 編號 | 修正內容 | 主要檔案 |
+|---|---|---|
+| C-08 | 新增 `EntityMatcher`，取代子字串比對：名稱以英數字開頭／結尾時，前後不可緊接英數字或底線（`A1` 不再命中 `A12`，`B_A1` 不再命中 `B_A12`；中文緊鄰時仍可命中），大小寫不敏感，名稱中的空白可對應零個空白。另外支援 `DomainProfile.entity_aliases`（例：`AI_Tech_Area` ↔「AI 展區」）與 `entity_parents`（展區事件也影響前往區內攤位的步驟，反向不成立）；比對時忽略步驟的出發點（`current_location`），關係事件 topic 中段的關係名稱不再當成實體。`NAVIGATION_PROFILE` 依 config 自動產生別名與從屬（不含「入口」這類幾乎都是出發點的別名），`EXPO_PROFILE` 依展場 Blackboard 填入 | `entity_match.py`（新）、`trigger.py`、`domain_profile.py`、`intentional_agent.py`、`navigation_scenario/config.py`、`run_intentional_agent.py` |
+| C-10 | 子樹／整體重規劃改為「先產生並換上新計畫，成功後才取消被取代的派工」；重規劃失敗時，原本的步驟繼續執行。RETRY／REPAIR 仍先取消再重派（同一節點） | `intentional_agent.py` |
+
+比對變準後（別名、從屬），環境事件觸發的重規劃會變多，C-10 若不修會讓更多步驟被無聲丟棄，因此一併處理。
+
+新增測試 26 個（比對規則 15、trigger 5、決策套用順序與設定 3、導航端到端 3），並以突變測試確認關鍵測試在還原修正後會失敗。全部非 integration 測試共 753 個通過、10 個略過。
 
 ---
 

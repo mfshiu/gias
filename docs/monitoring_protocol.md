@@ -159,7 +159,9 @@ execute_plan_with_monitoring(plan):
       → 送 *.cancel，並當成 ok=false 的結果併入 action_results
     decision = trigger.decide(env_changes, action_results, cursor)
     if decision is ABORT: break
-    if decision is non-NONE: repair.apply(decision); continue
+    if decision is RETRY / REPAIR: 取消該節點執行中的派工 → repair.apply(decision)
+    if decision is REPLAN_SUBTREE / REPLAN_ROOT: repair.apply(decision)；
+      新計畫換上後才取消被取代的派工（重規劃失敗時原本的派工繼續執行）
     next_atomics = cursor.next_ready_atomics()
     for atom in next_atomics:
       dispatch_async(atom)   # publish + subscribe(return_topic)
@@ -173,6 +175,7 @@ execute_plan_with_monitoring(plan):
 | 項目 | 來源 | 說明 |
 |------|------|------|
 | 監看哪些黑板變動 | `DomainProfile.env_subscriptions` | 例：`["Zone/*/*", "Booth/*/*"]`；空串列表示不監看。trigger 的相關 topic 前綴也由此推得（`"Zone/*/*"` → `"Zone/"`） |
+| 事件影響哪些步驟 | `DomainProfile.entity_aliases` / `entity_parents` | 以完整名稱比對步驟的 intent、task 與參數（不含 `current_location`），不用子字串；也比對別名，且上層實體（展區）的事件會影響提到下層實體（區內攤位）的步驟 |
 | 重規劃時的環境事實 | `DomainProfile.env_fact_queries` | `name -> Cypher`，經 `blackboard.control {command: query}` 查詢；查詢失敗的名稱列在 `_unavailable` |
 
 重規劃時 PlanRepair 會把下列脈絡交給 planner，planner 再放進拆解 prompt（一般規劃的 prompt 不變）：

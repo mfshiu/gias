@@ -271,3 +271,39 @@ def test_batch_runner_live_mode_uses_session_and_labels_report(tmp_path):
     assert json.loads((run_dir / "_manifest.json").read_text(encoding="utf-8"))["mode"] == "live"
     report = analyze_run(run_dir)["report_md"].read_text(encoding="utf-8")
     assert "**Mode**：live" in report
+
+
+# ----------------------------------------------------------------------
+# C-08：實體別名與從屬
+# ----------------------------------------------------------------------
+def test_navigation_profile_entity_maps():
+    assert "AI 展區" in NAVIGATION_PROFILE.entity_aliases["AI_Tech_Area"]
+    assert "TechCorp AI" in NAVIGATION_PROFILE.entity_aliases["B_AI1"]
+    assert "咖啡廳" in NAVIGATION_PROFILE.entity_aliases["P_Cafe"]
+    assert "入口" not in NAVIGATION_PROFILE.entity_aliases.get("P_Entrance", [])
+    assert NAVIGATION_PROFILE.entity_parents["B_AI1"] == "AI_Tech_Area"
+    assert NAVIGATION_PROFILE.entity_parents["P_Cafe"] == "Food_Court"
+
+
+def test_crowd_event_matches_chinese_target_name():
+    """LLM 用中文名稱指定目的地：靠別名仍能對應到 AI_Tech_Area 的事件並重規劃。"""
+    plans = [
+        _plan(("LocateExhibit", {"target_name": "AI 展區", "target_type": "exhibit_zone"})),
+        _plan(("SuggestRoute", {"destination": "AI 展區", "avoid_crowded": True})),
+    ]
+    with _World(plans) as world:
+        result = world.run("constrained_01_30")
+    assert result.metrics.task_success is True
+    assert result.metrics.extra["ia_replans"] == 1
+    assert {"zone": "AI_Tech_Area", "state": "Crowded"} in world.contexts[1]["env_facts"]["zone_states"]
+
+
+def test_failed_replan_keeps_robot_moving():
+    """展區事件影響前往區內攤位的步驟 → 嘗試重規劃；重規劃失敗時機器人照原計畫繼續。"""
+    with _World([_plan(("LocateExhibit", {"target_name": "TechCorp AI", "target_type": "booth"}))]) as world:
+        result = world.run("single_07_30")
+    m = result.metrics
+    assert len(world.contexts) == 2          # 第二次是事件觸發的重規劃（沒有可用的計畫）
+    assert m.extra["ia_replans"] == 0
+    assert m.task_success is True
+    assert result.final_path[-1] == "B_AI1"

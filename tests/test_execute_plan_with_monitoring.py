@@ -721,3 +721,71 @@ def test_llm_retry_of_in_flight_node_cancels_and_redispatches():
     )
     assert len(attempts) == 2
     assert result["ok"] is True
+
+
+# ----------------------------------------------------------------------
+# C-08 連帶修正：重規劃成功後才取消被取代的派工
+# ----------------------------------------------------------------------
+def _env_replan_setup(agent, *, planner):
+    """節點 a 前往 AI_Tech_Area；派工後收到該區環境事件 → REPLAN_SUBTREE。"""
+    plan = _root([
+        _composite("L2-1", [
+            _atomic("a", task="LocateExhibit", topic="navigation.request", target="AI_Tech_Area"),
+        ], intent="去 AI 區"),
+    ])
+    log = {"cancelled": [], "dispatched": []}
+
+    def dispatcher(node, payload):
+        if node.get("_cancel"):
+            log["cancelled"].append(payload["task_id"])
+            agent._monitor.on_action_result("navigation.result", {
+                "task_id": payload["task_id"], "ok": False, "cancelled": True})
+            return
+        log["dispatched"].append((node.get("id"), payload["task_id"]))
+        if node.get("id") == "a":
+            threading.Timer(0.05, agent._monitor.on_env_event, args=["bb", {
+                "topic": "Zone/AI_Tech_Area/crowd_level", "action": "update", "new_value": "Crowded",
+            }]).start()
+            # 動作本身 0.3 秒後完成
+            threading.Timer(0.3, agent._monitor.on_action_result, args=["navigation.result", {
+                "task_id": payload["task_id"], "ok": True}]).start()
+            return
+        agent._monitor.on_action_result("navigation.result", {"task_id": payload["task_id"], "ok": True})
+
+    result = agent.execute_plan_with_monitoring(
+        plan,
+        dispatcher=dispatcher,
+        subtree_planner=planner,
+        llm_decider=_no_llm,
+        trigger_config=TriggerConfig(relevant_topic_prefixes=("Zone/",), enable_root_replan=False),
+        budget=Budget(max_replans=1, max_retries_per_node=1, poll_interval_sec=0.01, deadline_sec=5.0),
+    )
+    return result, log
+
+
+def test_failed_replan_does_not_cancel_running_step():
+    """舊行為：先取消執行中的步驟再重規劃；重規劃失敗時該步驟被無聲丟棄。"""
+    agent = _make_agent()
+    result, log = _env_replan_setup(agent, planner=lambda intent, context: None)
+    assert log["cancelled"] == []
+    assert result["ok"] is True
+    a = next(r for r in result["results"] if r["id"] == "a")
+    assert a["state"] == "done"
+
+
+def test_successful_replan_cancels_replaced_step_afterwards():
+    agent = _make_agent()
+    new_sub = _composite("NEW", [_atomic("na", task="SuggestRoute", topic="navigation.request")])
+    result, log = _env_replan_setup(agent, planner=lambda intent, context: new_sub)
+    assert len(log["cancelled"]) == 1
+    assert log["cancelled"][0] == log["dispatched"][0][1]
+    assert any(nid.endswith("na") for nid, _ in log["dispatched"][1:])
+    assert result["ok"] is True
+
+
+def test_build_trigger_config_passes_entity_maps():
+    agent = _make_agent()
+    agent.domain = DomainProfile(entity_aliases={"AI_Tech_Area": ["AI 展區"]}, entity_parents={"B_AI1": "AI_Tech_Area"})
+    tc = agent._build_trigger_config()
+    assert tc.entity_aliases == {"AI_Tech_Area": ["AI 展區"]}
+    assert tc.entity_parents == {"B_AI1": "AI_Tech_Area"}

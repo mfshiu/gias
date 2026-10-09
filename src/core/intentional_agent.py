@@ -689,9 +689,7 @@ class IntentionalAgent(Agent):
                     self._cancel_in_flight(cursor, reason=f"abort:{decision.reason}", dispatcher=dispatcher)
                     break
                 if decision.is_actionable():
-                    self._cancel_in_flight_for_decision(cursor, decision, dispatcher=dispatcher)
-                    outcome = repair.apply(decision, cursor, intent=loop_intent)
-                    logger.info("Repair outcome: %s", outcome)
+                    self._apply_decision(decision, cursor, repair, intent=loop_intent, dispatcher=dispatcher)
 
                 # 3d) 派工 ready atomics
                 ready = cursor.next_ready_atomics()
@@ -756,6 +754,8 @@ class IntentionalAgent(Agent):
         tc = TriggerConfig(
             enable_llm_assist=bool(m.get("enable_llm_assist", False)),
             llm_max_calls=int(m.get("llm_max_calls", 10)),
+            entity_aliases={k: list(v) for k, v in (self.domain.entity_aliases or {}).items()},
+            entity_parents=dict(self.domain.entity_parents or {}),
         )
         prefixes = self._topic_prefixes(self.domain.env_subscriptions)
         if prefixes:
@@ -930,51 +930,53 @@ class IntentionalAgent(Agent):
             self._send_cancel(rec, reason=reason, dispatcher=dispatcher)
             cursor.cancel_in_flight(rec.node_id, reason=reason)
 
-    def _cancel_in_flight_for_decision(
+    def _apply_decision(
+        self,
+        decision: ReplanDecision,
+        cursor: PlanCursor,
+        repair: PlanRepair,
+        *,
+        intent: str,
+        dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        """套用 trigger 的決策。
+
+        - RETRY_NODE / REPAIR_NODE：同一節點要重派，先取消它執行中的派工再重設
+        - REPLAN_SUBTREE / REPLAN_ROOT：先產生並換上新計畫，成功後才取消被取代的派工；
+          重規劃失敗時原本的派工繼續執行，不會被無聲丟棄
+        """
+        if decision.kind in (TriggerKind.REPLAN_SUBTREE, TriggerKind.REPLAN_ROOT):
+            in_flight = {r.node_id: r.task_id for r in cursor.all_records() if r.state == NodeState.IN_FLIGHT}
+            outcome = repair.apply(decision, cursor, intent=intent)
+            if outcome.get("applied"):
+                for nid, task_id in in_flight.items():
+                    rec = cursor.record(nid)
+                    # replace_subtree / replace_root 會把被取代的 IN_FLIGHT 節點標為 OBSOLETE
+                    if rec is not None and rec.state == NodeState.OBSOLETE and rec.task_id == task_id:
+                        self._send_cancel(rec, reason=f"decision:{decision.kind.value}", dispatcher=dispatcher)
+        else:
+            self._cancel_for_redispatch(cursor, decision, dispatcher=dispatcher)
+            outcome = repair.apply(decision, cursor, intent=intent)
+        logger.info("Repair outcome: %s", outcome)
+        return outcome
+
+    def _cancel_for_redispatch(
         self,
         cursor: PlanCursor,
         decision: ReplanDecision,
         *,
         dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None,
     ) -> None:
-        """根據決策決定要對哪些 IN_FLIGHT 節點送 cancel。
+        """RETRY_NODE / REPAIR_NODE：取消 affected_node_ids 中仍在執行的派工。
 
-        - RETRY_NODE / REPAIR_NODE：affected_node_ids
-        - REPLAN_SUBTREE：composite 內所有 IN_FLIGHT
-        - REPLAN_ROOT：全部 IN_FLIGHT
+        標為 CANCELLED 才能 reset_for_retry；舊派工遲到的結果會被 cursor 忽略。
         """
-        if decision.kind == TriggerKind.REPLAN_ROOT:
-            self._cancel_in_flight(cursor, reason="replan_root", dispatcher=dispatcher)
-            return
-
-        targets: set[str] = set()
-        if decision.kind in (TriggerKind.RETRY_NODE, TriggerKind.REPAIR_NODE):
-            targets.update(decision.affected_node_ids)
-        elif decision.kind == TriggerKind.REPLAN_SUBTREE and decision.subtree_root_id:
-            composite = cursor.composite_node(decision.subtree_root_id)
-            if isinstance(composite, dict):
-                # collect atomic ids inside this composite
-                stack = [composite]
-                while stack:
-                    n = stack.pop()
-                    if not isinstance(n, dict):
-                        continue
-                    if n.get("type") == "atomic" or n.get("is_atomic") is True:
-                        nid = n.get("id")
-                        if nid:
-                            targets.add(str(nid))
-                    else:
-                        stack.extend(n.get("sub_plans") or [])
-        for nid in targets:
+        for nid in decision.affected_node_ids:
             rec = cursor.record(nid)
             if rec is None or rec.state != NodeState.IN_FLIGHT or not rec.task_id:
                 continue
             self._send_cancel(rec, reason=f"decision:{decision.kind.value}", dispatcher=dispatcher)
-            if decision.kind in (TriggerKind.RETRY_NODE, TriggerKind.REPAIR_NODE):
-                # 同一節點要重派：標為 CANCELLED 才能 reset_for_retry（舊派工的遲到結果會被忽略）
-                cursor.mark_cancelled(nid, result={"reason": f"decision:{decision.kind.value}"})
-            else:
-                cursor.cancel_in_flight(nid, reason=decision.kind.value)
+            cursor.mark_cancelled(nid, result={"reason": f"decision:{decision.kind.value}"})
 
     def _send_cancel(
         self,

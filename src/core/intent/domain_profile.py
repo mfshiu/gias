@@ -13,6 +13,10 @@ class DomainProfile:
       變動事件會送進監測迴圈；空串列表示不監看環境
     - env_fact_queries: 重規劃時查詢的環境事實，name -> Cypher（經黑板代理查詢），
       結果會放進重規劃的 prompt
+    - entity_aliases: 實體 id -> 其他稱呼（如 "AI_Tech_Area" -> ["AI 展區"]），
+      讓環境事件中的 id 能對應到計畫步驟裡的中文名稱
+    - entity_parents: 實體 id -> 所在的上層實體（如攤位 -> 展區）；
+      上層實體的事件也會影響引用下層實體的步驟
     """
     name: str = "generic"
     synonym_rules: list[tuple[str, str]] = field(default_factory=list)
@@ -21,6 +25,8 @@ class DomainProfile:
     enum_alias: dict[str, dict[str, str]] = field(default_factory=dict)
     env_subscriptions: list[str] = field(default_factory=list)
     env_fact_queries: dict[str, str] = field(default_factory=dict)
+    entity_aliases: dict[str, list[str]] = field(default_factory=dict)
+    entity_parents: dict[str, str] = field(default_factory=dict)
 
     def normalize(self, text: str) -> str:
         t = (text or "").strip()

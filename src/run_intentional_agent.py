@@ -55,6 +55,26 @@ EXPO_PROFILE = DomainProfile(
         "target_type": {"攤位": "booth", "展區": "exhibit_zone", "展品": "exhibit"},
         "facility_type": {"廁所": "restroom", "洗手間": "restroom", "出口": "exit", "服務台": "service_desk", "無障礙": "accessible"},
     },
+    # 實體別名與從屬（對應展場 Blackboard：tests/seed_blackboard/seed_blackboard.py），
+    # 讓環境事件的 id 能對應到計畫步驟裡的中文名稱，且展區事件會影響前往區內攤位的步驟
+    entity_aliases={
+        "Main_Hall": ["主大廳"],
+        "AI_Tech_Area": ["AI 展區", "AI 科技展區"],
+        "Gaming_Area": ["遊戲展區"],
+        "B_A1": ["TechCorp AI"],
+        "B_A2": ["Robotics Inc"],
+        "B_B1": ["GameStudio X"],
+        "P_Info": ["Information Desk", "服務台"],
+        "P_Restroom": ["Restroom_South", "洗手間", "廁所"],
+    },
+    entity_parents={
+        "P_Entrance": "Main_Hall",
+        "P_Info": "Main_Hall",
+        "B_A1": "AI_Tech_Area",
+        "B_A2": "AI_Tech_Area",
+        "B_B1": "Gaming_Area",
+        "P_Restroom": "Gaming_Area",
+    },
     # 執行期間監看的黑板變動：Zone 人潮狀態（屬性與 CURRENT_STATE 關係）、Booth 開放狀態
     env_subscriptions=["Zone/*/*", "Booth/*/*"],
     # 重規劃時提供給 LLM 的環境事實（只列出異常狀態，避免 prompt 過長）
