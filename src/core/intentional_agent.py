@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
@@ -109,6 +110,7 @@ class IntentionalAgent(Agent):
         self._result_subs_active: bool = False
         self._bb_subs_active: bool = False
         self._monitor_lock_topics: set[str] = set()
+        self._stop_event = threading.Event()
 
         super().__init__("intentional_agent.gias", agent_config)
 
@@ -145,6 +147,10 @@ class IntentionalAgent(Agent):
             result = self.execute_plan(plan)
         logger.info("Plan execution finished: ok=%s", result.get("ok", False))
         self._terminate()
+
+    def request_stop(self) -> None:
+        """要求監測迴圈停止：取消所有執行中的動作後結束（可由其他 thread 呼叫）。"""
+        self._stop_event.set()
 
     def _monitoring_enabled(self) -> bool:
         cfg = self.agent_config or {}
@@ -644,6 +650,11 @@ class IntentionalAgent(Agent):
             loop_intent = plan.get("intent") or self.intention
             idle_polls = 0
             while not cursor.done() and not guard.exhausted():
+                if self._stop_event.is_set():
+                    logger.warning("Monitored execution stopped by request.")
+                    self._cancel_in_flight(cursor, reason="stopped", dispatcher=dispatcher)
+                    break
+
                 # 3a) drain inbox
                 changes = monitor.drain_changes()
                 results = monitor.drain_results()

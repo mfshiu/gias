@@ -9,11 +9,13 @@ Navigation Scenario：批次執行所有測試案例
     python -m navigation_scenario.batch_runner --category single_target
     python -m navigation_scenario.batch_runner --pct 30
     python -m navigation_scenario.batch_runner --limit 5
+    python -m navigation_scenario.batch_runner --live --category constrained   # 真實 GIAS 流程
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -79,14 +81,21 @@ def run_batch(
     reset_between_cases: bool = True,
     reset_before_batch: bool = True,
     replan_failure_probability: float = 0.0,
+    live_session=None,
 ) -> Path:
-    """執行一批 cases，回傳輸出目錄路徑。"""
+    """執行一批 cases，回傳輸出目錄路徑。
+
+    live_session（navigation_scenario.live.runner.LiveSession）不為 None 時，
+    以真實 GIAS 流程執行每個案例；否則使用圖論模擬。
+    """
+    mode = "live" if live_session is not None else "simulation"
     _ensure_dir(RESULTS_ROOT)
     run_dir = output_dir or (RESULTS_ROOT / _new_run_id())
     _ensure_dir(run_dir)
 
     print(f"\n=== Navigation Scenario Batch Run ===")
     print(f"  輸出目錄  : {run_dir}")
+    print(f"  模式      : {mode}")
     print(f"  案例數    : {len(cases)}")
     print(f"  每案還原 KG : {reset_between_cases}")
     if replan_failure_probability > 0:
@@ -107,7 +116,7 @@ def run_batch(
     successes = 0
     failures: list[tuple[str, str]] = []
 
-    with MqttEventInjector() as injector:
+    with (contextlib.nullcontext() if live_session is not None else MqttEventInjector()) as injector:
         for i, case in enumerate(cases, start=1):
             if reset_between_cases and i > 1:
                 try:
@@ -122,14 +131,17 @@ def run_batch(
                 flush=True,
             )
             try:
-                result = run_case(
-                    case,
-                    injector=injector,
-                    snapshot_wait_sec=snapshot_wait_sec,
-                    timeout_sec=timeout_sec,
-                    auto_recover=True,
-                    replan_failure_probability=replan_failure_probability,
-                )
+                if live_session is not None:
+                    result = live_session.run_case(case)
+                else:
+                    result = run_case(
+                        case,
+                        injector=injector,
+                        snapshot_wait_sec=snapshot_wait_sec,
+                        timeout_sec=timeout_sec,
+                        auto_recover=True,
+                        replan_failure_probability=replan_failure_probability,
+                    )
                 _write_case_result(run_dir, result)
                 m = result.metrics
                 tag = "OK " if m.task_success else "FAIL"
@@ -153,6 +165,7 @@ def run_batch(
     # 寫總結 manifest
     manifest = {
         "run_dir": str(run_dir),
+        "mode": mode,
         "n_cases": len(cases),
         "n_success": successes,
         "n_fail": len(cases) - successes,
@@ -225,6 +238,13 @@ def main() -> int:
         choices=["VERBOSE", "DEBUG", "INFO", "WARNING", "ERROR"],
         default=None,
     )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="以真實 GIAS 流程執行（LLM 規劃 + 監測迴圈 + 機器人在 Blackboard 圖上移動）",
+    )
+    from navigation_scenario.live.runner import add_live_arguments, session_from_args
+    add_live_arguments(parser)
     args = parser.parse_args()
 
     if args.log_level:
@@ -251,17 +271,21 @@ def main() -> int:
     _maybe_reset_blackboard()
 
     out_dir = Path(args.output) if args.output else None
-    run_dir = run_batch(
-        cases,
-        snapshot_wait_sec=args.snapshot_wait,
-        timeout_sec=args.timeout,
-        inter_case_pause_sec=args.pause,
-        output_dir=out_dir,
-        fail_fast=args.fail_fast,
-        reset_between_cases=not args.no_reset_between,
-        reset_before_batch=not args.no_reset_before,
-        replan_failure_probability=args.replan_failure_probability,
-    )
+    if args.live and args.replan_failure_probability > 0:
+        print("提示：--replan-failure-probability 只用於模擬模式，live 模式忽略此參數")
+    with (session_from_args(args) if args.live else contextlib.nullcontext()) as live_session:
+        run_dir = run_batch(
+            cases,
+            snapshot_wait_sec=args.snapshot_wait,
+            timeout_sec=args.timeout,
+            inter_case_pause_sec=args.pause,
+            output_dir=out_dir,
+            fail_fast=args.fail_fast,
+            reset_between_cases=not args.no_reset_between,
+            reset_before_batch=not args.no_reset_before,
+            replan_failure_probability=0.0 if args.live else args.replan_failure_probability,
+            live_session=live_session,
+        )
 
     if not args.no_analyze:
         try:

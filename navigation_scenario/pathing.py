@@ -124,6 +124,24 @@ RETURN z.name AS zone, s.status_name AS state
 """
 
 
+def snapshot_from_config() -> GraphSnapshot:
+    """依 config.py 的地圖建立 baseline 快照（所有區域 Normal、通道未封鎖），不需要 Neo4j。"""
+    from navigation_scenario.config import BOOTHS, EDGES, POIS, STATE_NORMAL, ZONES
+
+    snap = GraphSnapshot()
+    for zone in ZONES:
+        snap.nodes[zone] = {"label": "Zone", "zone": zone}
+        snap.zone_states[zone] = STATE_NORMAL
+    for poi in POIS:
+        snap.nodes[poi["id"]] = {"label": "POI", "zone": poi["zone"]}
+    for booth in BOOTHS:
+        snap.nodes[booth["id"]] = {"label": "Booth", "zone": booth["zone"]}
+    for a, b, dist in EDGES:
+        snap.edges[(a, b)] = {"distance": float(dist), "blocked": False}
+        snap.edges[(b, a)] = {"distance": float(dist), "blocked": False}
+    return snap
+
+
 def load_snapshot(adapter: Neo4jBoltAdapter | None = None) -> GraphSnapshot:
     """從 Blackboard KG 載入當前圖快照。"""
     adp = adapter or _bb_adapter()

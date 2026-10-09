@@ -110,6 +110,20 @@ python -X utf8 -m navigation_scenario.batch_runner --category constrained --pct 
 python -X utf8 -m navigation_scenario.analyze navigation_scenario_results/run_20260524_193000
 ```
 
+### live 模式（真實 GIAS 流程）
+
+上面的 `runner` / `batch_runner` 是**圖論模擬**，不會呼叫 IntentionalAgent。加上 `--live` 會改用
+`navigation_scenario.live`：真實 LLM 規劃 → 監測迴圈經 MQTT 派工 → `GuideAgent` 在 Blackboard 圖上實際移動 →
+事件寫進 Blackboard 後由 IntentionalAgent 決定 retry / replan，指標依機器人實際軌跡計算。
+不需要 `run_sensors`，但需要 Neo4j、MQTT 與 LLM 設定。
+
+```powershell
+python -X utf8 -m navigation_scenario.live.runner constrained_01_30
+python -X utf8 -m navigation_scenario.batch_runner --live --category constrained
+```
+
+完整說明見 [`docs/navigation_scenario_runbook.md § 8.6`](../docs/navigation_scenario_runbook.md#86-live-模式以真實-gias-流程執行navigation_scenariolive)。
+
 ### 評估指標
 
 | 指標 | 全稱 | 定義 |

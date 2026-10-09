@@ -63,6 +63,7 @@ def _load_case_metrics(run_dir: Path) -> list[CaseMetrics]:
                     completion_time_sec=float(m["completion_time_sec"]),
                     timed_out=bool(m.get("timed_out", False)),
                     notes=m.get("notes", ""),
+                    extra=m.get("extra") or {},
                 )
             )
         except Exception as e:
@@ -194,9 +195,15 @@ def _write_markdown(
     out: Path,
 ) -> None:
     overall = aggregate(cases)
+    live = any((c.extra or {}).get("mode") == "live" for c in cases)
+    mode = (
+        "live（真實 GIAS 流程：LLM 規劃 → 監測迴圈 → 機器人實際移動）；完成時間為真實經過時間（含 LLM）"
+        if live else "simulation（圖論模擬，不呼叫 IntentionalAgent）"
+    )
     md = f"""# Navigation Scenario 評估報告
 
 **Run directory**：`{run_dir}`
+**Mode**：{mode}
 **Total cases**：{overall.n_cases}
 
 ## 1. 整體指標

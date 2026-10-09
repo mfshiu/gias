@@ -17,7 +17,8 @@ Navigation Scenario：單一案例執行器
 
 注意：本模組以「圖論模擬」為主，不真的呼叫 IntentionalAgent 規劃；
 這是因為要產出可重現、可量化、可在無 LLM 環境下執行的結果。
-未來可加上 `--live` 模式整合真實 Agent 流程。
+以真實 GIAS 流程（LLM 規劃 + 監測迴圈 + 機器人實際移動）執行請用
+`navigation_scenario.live.runner`，或 `batch_runner --live`。
 """
 
 from __future__ import annotations

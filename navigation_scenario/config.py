@@ -218,7 +218,57 @@ NAVIGATION_PROFILE = DomainProfile(
             "無障礙": "accessible",
         },
     },
+    # live 模式：執行期間監看的黑板變動（Zone 人潮/封閉、Booth 開放狀態）
+    env_subscriptions=["Zone/*/*", "Booth/*/*"],
+    # live 模式：重規劃時提供給 LLM 的環境事實
+    env_fact_queries={
+        "zone_states": (
+            "MATCH (z:Zone)-[:CURRENT_STATE]->(s:State) "
+            "WHERE s.status_name IN ['Crowded', 'Closed'] "
+            "RETURN z.name AS zone, s.status_name AS state"
+        ),
+        "blocked_passages": (
+            "MATCH (a)-[r:CONNECTED_TO]->(b) WHERE r.blocked = true "
+            "RETURN coalesce(a.id, a.name) AS from, coalesce(b.id, b.name) AS to"
+        ),
+        "closed_booths": (
+            "MATCH (b:Booth) WHERE b.status IS NOT NULL AND b.status <> 'open' "
+            "RETURN b.id AS booth, b.status AS status"
+        ),
+        "robot_position": (
+            "MATCH (a:Agent {agent_id: 'guide_robot'})-[:CURRENT_POSITION]->(n) "
+            "RETURN coalesce(n.id, n.name) AS node"
+        ),
+    },
 )
+
+
+# =============================================================================
+# live 模式：嚮導機器人（GuideAgent）
+# =============================================================================
+
+# 機器人在 Blackboard 上的 Agent.agent_id（env_fact_queries 的 robot_position 依此查詢）
+GUIDE_ROBOT_ID = "guide_robot"
+
+# 設施類型 → 可前往的 POI（LocateFacility 會選最近的一個）
+FACILITY_POIS: dict[str, list[str]] = {
+    "restroom": ["P_Restroom_N", "P_Restroom_S"],
+    "exit": ["P_Exit"],
+    "service_desk": ["P_Info"],
+    "accessible": ["P_Info"],
+}
+
+# 中文說法 → POI（解析 LLM 給的目的地文字用）
+POI_ALIASES: dict[str, str] = {
+    "咖啡廳": "P_Cafe",
+    "咖啡": "P_Cafe",
+    "出口": "P_Exit",
+    "服務台": "P_Info",
+    "詢問處": "P_Info",
+    "入口": "P_Entrance",
+    "北側洗手間": "P_Restroom_N",
+    "南側洗手間": "P_Restroom_S",
+}
 
 
 # =============================================================================

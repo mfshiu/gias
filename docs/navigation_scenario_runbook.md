@@ -569,6 +569,63 @@ navigation_scenario_results/
 - 「類別 × 注入時機」表格（對應第二張投影片）
 - 「事件種類」分類表（crowd_congestion / area_closure / route_detour）
 - 失敗案例列表（含 `notes` 欄位）
+- `Mode`：`simulation`（圖論模擬）或 `live`（真實 GIAS 流程）
+
+### 8.6 live 模式：以真實 GIAS 流程執行（`navigation_scenario.live`）
+
+8.4 的 runner 是圖論模擬，不會呼叫 IntentionalAgent。live 模式讓每個案例走完整條管線，
+作為端到端 benchmark 與回歸測試：
+
+1. `IntentionalAgent.plan_intention(案例請求)`：真實 LLM + Action KG 規劃
+2. `execute_plan_with_monitoring`：監測迴圈經 MQTT 派工
+3. `GuideAgent`（取代 NavigationAgent）在 Blackboard 圖上**實際移動**：每走一條邊前重讀圖、重算路徑；
+   封鎖通道與 Closed 區域不可通行，`avoid_crowded` 依任務參數；走不到時回報失敗
+4. 機器人已走邊數達 baseline 邊數的 `injection_pct` 時，把事件**直接寫進 Blackboard**；
+   BlackboardAgent 偵測後通知 IntentionalAgent，由它決定 retry / repair / replan
+5. 依機器人實際軌跡計算指標
+
+**前置條件**：MQTT broker、Neo4j（`actions` 已用本套件的 `seed_actions` 建立、`blackboard` 已 seed）、
+`gias.toml` 的 LLM 設定。**不需要** `run_sensors`；BlackboardAgent、GuideAgent、InfoAgent 由 live 模式在同一個
+process 啟動，請勿同時執行其他 NavigationAgent（例如 `run_all`），否則會重複接單。
+
+```powershell
+# 單一案例
+python -X utf8 -m navigation_scenario.live.runner constrained_01_30 --output c01.json
+
+# 批次 + 自動分析（其餘篩選參數與模擬模式相同）
+python -X utf8 -m navigation_scenario.batch_runner --live --category constrained
+
+# 啟用 IntentionalAgent 的 LLM 輔助判斷；機器人走慢一點（每公尺 0.2 秒）
+python -X utf8 -m navigation_scenario.batch_runner --live --llm-assist --seconds-per-meter 0.2
+
+# 改用感測器注入事件（需 run_sensors；run_sensors 已啟動 BlackboardAgent，所以加 --no-blackboard-agent）
+python -X utf8 -m navigation_scenario.batch_runner --live --via-sensors --no-blackboard-agent
+```
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `--seconds-per-meter` | 0.1 | 機器人移動速度（10 公尺的邊走 1 秒） |
+| `--case-timeout` | 180 | 單一案例逾時（秒，含 LLM 規劃）；逾時會要求 IntentionalAgent 停止並取消執行中的動作 |
+| `--node-timeout` | 60 | 單一動作逾時（秒） |
+| `--llm-assist` | 關 | `intent.monitoring.enable_llm_assist` |
+| `--via-sensors` | 關 | 經 MQTT 由感測器注入（會受感測器隨機性影響） |
+
+**live 模式的指標定義**（與模擬模式使用相同欄位，資料來源不同）：
+
+| 指標 | live 模式的定義 |
+|------|----------------|
+| TSR | 機器人依序到達全部目標（zone 目標：走進該區任一節點） |
+| ISR | 任務成功，且途中沒有違反案例限制（例：要求避開擁擠卻走進 Crowded 區；目標所在區除外） |
+| RSR | 事件注入後 IntentionalAgent 做了 retry / repair / replan，或 GuideAgent 繞行，且最後成功 |
+| PE | baseline 最短距離 ÷ 機器人實際走過的距離（多目標時逐段平均） |
+| 完成時間 | 真實經過時間（含 LLM 規劃）；不同 `--seconds-per-meter` 之間不可比較 |
+
+每個案例的 JSON 在 `metrics.extra` 另有：`plan_steps`（LLM 規劃出的步驟）、`planning_sec`、`ia_replans`、
+`ia_redispatches`、`replan_log`、`executor_reroutes_after_injection`、`constraint_violations`、`injection`
+（注入時機器人位置與進度）等，用來判斷調適發生在意圖層還是執行層。
+
+> 注意：BlackboardWatcher 不監看關係屬性，`route_detour`（`CONNECTED_TO.blocked`）不會產生事件，
+> 只會由 GuideAgent 在下一步就地繞行。
 
 ---
 
@@ -607,5 +664,6 @@ Write-Host "`n=== Step 3: run_sensors（Ctrl+C 結束） ===" -ForegroundColor C
 | `navigation_scenario/sensors/visual.py` | 視覺／通道封鎖感測（變化才寫 edge） |
 | `navigation_scenario/sensors/digital.py` | 數位／場館 API 感測（同狀態機率跳過） |
 | `navigation_scenario/README.md` | 模組概觀（精簡版） |
+| `navigation_scenario/live/` | live 模式：GuideAgent、事件注入、指標計算、`LiveSession` 與 CLI（見 8.6） |
 | `docs/navigation_scenario_runbook.md` | 本文件（完整執行手冊） |
 | `docs/monitoring_protocol.md` | Topic / payload 契約（IntentionalAgent ↔ executors） |

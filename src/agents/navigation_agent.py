@@ -349,7 +349,7 @@ class NavigationAgent(Agent):
         t0 = time.time()
         cancelled = False
         try:
-            message, cancelled = _execute(self, task, params, cancel_token=token)
+            message, cancelled = self.execute_task(task, params, cancel_token=token, task_id=task_id)
         except Exception as e:
             logger.exception("NavigationAgent execute failed: %s", e)
             message, cancelled = (f"執行失敗：{e}", False)
@@ -395,6 +395,20 @@ class NavigationAgent(Agent):
         if task_id:
             self._publish_result(result)
         return result
+
+    def execute_task(
+        self,
+        task: str,
+        params: dict[str, Any],
+        *,
+        cancel_token: CancelToken | None = None,
+        task_id: str | None = None,
+    ) -> tuple[str, bool]:
+        """執行單一 task，回傳 (message, cancelled)；失敗時拋出例外。
+
+        子類別可覆寫以提供實際的導航行為（例：navigation_scenario.live.GuideAgent）。
+        """
+        return _execute(self, task, params, cancel_token=cancel_token)
 
     def _handle_cancel(self, topic: str, pcl: Any) -> dict[str, Any]:
         data = parse_cancel_payload(pcl)

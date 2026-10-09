@@ -49,11 +49,11 @@
 
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
-| **V-01** | 實驗驗證 | 導航實驗完全沒呼叫 IntentionalAgent，改用 Dijkstra 模擬，失敗則依 `replan_failure_probability` 隨機注入 | [runner.py:18](../navigation_scenario/runner.py#L18) | TSR 95%、RSR 80.9% 量到的是圖演算法，不是 GIAS 的重規劃 | 未處理 |
-| **V-02** | 實驗驗證 | 核心的監測執行路徑 `execute_plan_with_monitoring` 只有 mock 單元測試，沒有任何端到端實驗跑過 | [intentional_agent.py:508](../src/core/intentional_agent.py#L508) | 「監控與重新考慮」這項主張缺乏實驗支持 | 未處理 |
-| **L-01** | 閉環／監測 | 黑板環境事件沒有接進監測器：全 repo 沒有地方訂閱 `on_env_event`，`_bb_subs_active` 也從未使用（檔頭註解宣稱有訂閱） | [monitor.py:52](../src/core/monitoring/monitor.py#L52)、[intentional_agent.py:99](../src/core/intentional_agent.py#L99) | 環境改變永遠不會觸發重規劃，系統只對動作失敗反應，閉環沒有成立 | 已修正（未 commit） |
-| **C-01** | 正確性 | 巢狀計畫的節點 ID 衝突：LLM 每層都從 "1" 開始編號，cursor 遇到重複 ID 就靜默略過（已實測重現，見附錄） | [planner.py:145](../src/core/intent/planner.py#L145)、[cursor.py:105](../src/core/monitoring/cursor.py#L105) | 子任務沒被執行，最後卻回報 `ok=True` | 已修正（未 commit） |
-| **C-02** | 正確性 | 沒有 action 或 topic 的 atomic 節點（`leaf_no_children`、`leaf_forced_atomic`，或 action 為空字串的節點）會繞過白名單檢查，被預設送到 `info.request`，而 InfoAgent 對未知 task 一律回成功 | [planner.py:122](../src/core/intent/planner.py#L122)、[planner.py:139](../src/core/intent/planner.py#L139)、[_executor_utils.py:55](../src/agents/_executor_utils.py#L55)、[info_agent.py:200](../src/agents/info_agent.py#L200) | 根本無法執行的步驟被記為成功（假成功） | 已修正（未 commit） |
+| **V-01** | 實驗驗證 | 導航實驗完全沒呼叫 IntentionalAgent，改用 Dijkstra 模擬，失敗則依 `replan_failure_probability` 隨機注入 | [runner.py:18](../navigation_scenario/runner.py#L18) | TSR 95%、RSR 80.9% 量到的是圖演算法，不是 GIAS 的重規劃 | 已修正（尚未在真實服務上執行） |
+| **V-02** | 實驗驗證 | 核心的監測執行路徑 `execute_plan_with_monitoring` 只有 mock 單元測試，沒有任何端到端實驗跑過 | [intentional_agent.py:508](../src/core/intentional_agent.py#L508) | 「監控與重新考慮」這項主張缺乏實驗支持 | 已修正（尚未在真實服務上執行） |
+| **L-01** | 閉環／監測 | 黑板環境事件沒有接進監測器：全 repo 沒有地方訂閱 `on_env_event`，`_bb_subs_active` 也從未使用（檔頭註解宣稱有訂閱） | [monitor.py:52](../src/core/monitoring/monitor.py#L52)、[intentional_agent.py:99](../src/core/intentional_agent.py#L99) | 環境改變永遠不會觸發重規劃，系統只對動作失敗反應，閉環沒有成立 | 已修正（3b4495c） |
+| **C-01** | 正確性 | 巢狀計畫的節點 ID 衝突：LLM 每層都從 "1" 開始編號，cursor 遇到重複 ID 就靜默略過（已實測重現，見附錄） | [planner.py:145](../src/core/intent/planner.py#L145)、[cursor.py:105](../src/core/monitoring/cursor.py#L105) | 子任務沒被執行，最後卻回報 `ok=True` | 已修正（8b0cbce） |
+| **C-02** | 正確性 | 沒有 action 或 topic 的 atomic 節點（`leaf_no_children`、`leaf_forced_atomic`，或 action 為空字串的節點）會繞過白名單檢查，被預設送到 `info.request`，而 InfoAgent 對未知 task 一律回成功 | [planner.py:122](../src/core/intent/planner.py#L122)、[planner.py:139](../src/core/intent/planner.py#L139)、[_executor_utils.py:55](../src/agents/_executor_utils.py#L55)、[info_agent.py:200](../src/agents/info_agent.py#L200) | 根本無法執行的步驟被記為成功（假成功） | 已修正（8b0cbce） |
 
 ## 二、高（11 項）
 
@@ -62,14 +62,14 @@
 | **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 未處理 |
 | **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 未處理 |
 | **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 未處理 |
-| **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（未 commit） |
-| **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（未 commit） |
-| **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（未 commit） |
-| **C-04** | 正確性 | 節點沒有逾時機制，`deadline_sec` 預設為 None | [intentional_agent.py:613](../src/core/intentional_agent.py#L613)、[budget.py:20](../src/core/monitoring/budget.py#L20) | 執行端掛掉或訊息遺失時，迴圈會永遠等待 | 已修正（未 commit） |
+| **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（3b4495c） |
+| **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（3b4495c） |
+| **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（8b0cbce） |
+| **C-04** | 正確性 | 節點沒有逾時機制，`deadline_sec` 預設為 None | [intentional_agent.py:613](../src/core/intentional_agent.py#L613)、[budget.py:20](../src/core/monitoring/budget.py#L20) | 執行端掛掉或訊息遺失時，迴圈會永遠等待 | 已修正（8b0cbce） |
 | **A-01** | 架構落差 | 意圖只是一個字串：沒有 Intention 模型和生命週期狀態，不支援多意圖、優先序或衝突管理，Agent 執行完就結束 | [intentional_agent.py:70](../src/core/intentional_agent.py#L70)、[intentional_agent.py:136](../src/core/intentional_agent.py#L136) | 「跨時間維持意圖」與 Bratman 意圖理論的主張沒有落實 | 未處理 |
 | **A-02** | 架構落差 | 前置條件驗證沒有實作：Action KG 沒有前置條件和效果，`preconditions_by_action`、`conflicts_between_intents` 已寫好卻從未被呼叫 | [queries.py:211](../src/kg/queries.py#L211)、[queries.py:233](../src/kg/queries.py#L233) | 摘要所說「KG-RAG 提供前置條件驗證」與程式不符；LLM 產生的計畫沒有符號層面的驗證 | 未處理 |
 | **S-01** | 安全 | `blackboard.control` 會執行任何 MQTT 用戶端送來的 Cypher，沒有白名單也沒有權限控管 | [blackboard/agent.py:212](../src/blackboard/agent.py#L212)、[blackboard/agent.py:232](../src/blackboard/agent.py#L232) | 任何連得上 broker 的人都能讀取或刪除整個黑板 | 未處理 |
-| **E-01** | 工程品質 | 核心監測子系統 `src/core/monitoring/` 還沒加入 git 追蹤，另有約 1,100 行修改未 commit | `src/core/monitoring/` | 程式可能遺失，版本也無法追溯 | 未處理 |
+| **E-01** | 工程品質 | 核心監測子系統 `src/core/monitoring/` 還沒加入 git 追蹤，另有約 1,100 行修改未 commit | `src/core/monitoring/` | 程式可能遺失，版本也無法追溯 | 已修正（c2ab5bf） |
 
 ## 三、中（15 項）
 
@@ -121,7 +121,7 @@
 
 ## 修正紀錄
 
-### 2026-10-09：C-01 ～ C-04（未 commit）
+### 2026-10-09：C-01 ～ C-04（commit 8b0cbce）
 
 | 編號 | 修正內容 | 主要檔案 |
 |---|---|---|
@@ -134,7 +134,7 @@
 
 另外，`tests/test_plan_intention_policy.py` 原本用「沒有任何步驟的空計畫」當作規劃成功的案例，C-02 修正後會被正確判為無法執行，因此把該測試的假計畫改成含一個可執行步驟。
 
-### 2026-10-09：L-01 ～ L-03（未 commit）
+### 2026-10-09：L-01 ～ L-03（commit 3b4495c）
 
 | 編號 | 修正內容 | 主要檔案 |
 |---|---|---|
@@ -148,6 +148,23 @@
 - `tests/test_log_colors.py::test_log_colors_visual` 失敗，與本次修改無關（只涉及 `log_helper`）。
 - BlackboardWatcher 不監看關係屬性，因此 `CONNECTED_TO.blocked`（通道封鎖）不會產生事件；目前只能在重規劃時透過 `env_fact_queries` 取得。
 - 節點與環境事件的對應仍是子字串比對（C-08），區域 ID 與中文名稱寫法不同時需靠 LLM 輔助判斷。
+
+
+### 2026-10-09：V-01、V-02
+
+| 編號 | 修正內容 | 主要檔案 |
+|---|---|---|
+| V-01 | 導航實驗新增 live 模式（`batch_runner --live`、`python -m navigation_scenario.live.runner <case>`）：每個案例都經過 IntentionalAgent 的 LLM 規劃與監測迴圈，由新的 `GuideAgent` 在 Blackboard 圖上實際移動（每步重讀圖、重算路徑，封鎖通道與封閉區不可通行，走不到時回報失敗），事件在機器人走到注入時機時直接寫進 Blackboard，指標依機器人實際軌跡計算。報告標示 Mode（simulation / live），模擬模式行為不變 | `navigation_scenario/live/`（新）、`batch_runner.py`、`analyze.py`、`config.py`、`pathing.py` |
+| V-02 | live 模式本身就是 `execute_plan_with_monitoring` 的端到端驗證；另加封閉式端到端測試（真實監測迴圈、trigger、repair、GuideAgent、evaluation，只把 MQTT／Neo4j／LLM 換成記憶體替身），涵蓋四種路徑：環境事件觸發意圖層重規劃、通道封鎖由執行層繞行、執行失敗 → 重派 → 帶錯誤訊息重規劃、案例逾時要求停止。為了讓逾時的案例不會繼續派工干擾下一個案例，IntentionalAgent 新增 `request_stop()` | `tests/navigation_scenario/test_live_*.py`（新）、`intentional_agent.py`、`navigation_agent.py`（新增可覆寫的 `execute_task`） |
+
+新增測試 34 個（GuideAgent 23、指標計算 6、端到端 5），端到端測試連續重跑 5 次皆通過，並以突變測試確認關鍵測試在還原機制後會失敗。全部非 integration 測試共 727 個通過、10 個略過。
+
+**尚未完成**：本機 Neo4j 未啟動，live 模式還沒有在真實的 MQTT + Neo4j + LLM 上跑過；第一次執行前需先用 `navigation_scenario.seed_actions` 建立導航用 Action KG（會清空 actions database，與 `experiment1`、展場 seed 互相覆寫）。現有 `navigation_scenario_results/` 裡的數據仍是模擬模式的結果。
+
+**順帶發現（未修改）**：
+- `single_10_*`（「請帶我去最近的洗手間」）預期目標是 `P_Restroom_N`，但從入口出發最近的是 `P_Restroom_S`（52 m vs 72 m）；live 模式中機器人若正確走到最近的洗手間會被判為失敗。
+- `analyze._load_case_metrics` 讀檔時沒有載入 `segment_baselines` / `segment_actuals`，報告裡的 PE 實際上是總距離比，而不是 `metrics.py` 定義的逐段平均。
+- V-06 部分改善：live 模式的 GuideAgent 依 Blackboard 實際計算路線；預設的 NavigationAgent / InfoAgent 仍是固定訊息的模擬。
 
 ---
 
