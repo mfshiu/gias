@@ -11,6 +11,7 @@ GIAS monitoring & replanning subsystem.
 - monitor : ExecutionMonitor：把黑板事件與 executor 回傳結果聚合到單一 queue
 - trigger : ReplanTrigger：規則優先 + LLM 升級的再思考決策
 - repair  : PlanRepair：套用決策（retry / repair_node / replan_subtree / replan_root）
+- llm_advisor : LLMReplanAdvisor：規則判斷不了時的 LLM 判斷器（注入 ReplanTrigger）
 """
 
 from .events import (
@@ -25,6 +26,7 @@ from .budget import Budget, BudgetGuard
 from .monitor import ExecutionMonitor
 from .trigger import ReplanTrigger
 from .repair import PlanRepair
+from .llm_advisor import LLMReplanAdvisor
 
 __all__ = [
     "NodeState",
@@ -41,4 +43,5 @@ __all__ = [
     "ExecutionMonitor",
     "ReplanTrigger",
     "PlanRepair",
+    "LLMReplanAdvisor",
 ]

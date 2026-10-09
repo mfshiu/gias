@@ -6,12 +6,12 @@ class LLMDecomposer:
         self.prompt_builder = prompt_builder
         self.logger = logger
 
-    def decompose(self, intent: str, available_actions: dict[str, str]) -> dict | None:
+    def decompose(self, intent: str, available_actions: dict[str, str], context: dict | None = None) -> dict | None:
         try:
             resp = self.llm.chat(
                 messages=[
                     {"role": "system", "content": "You are a specialized agent for Time-Aware HTN planning. Return ONLY valid JSON."},
-                    {"role": "user", "content": self.prompt_builder.build_prompt(intent, available_actions)},
+                    {"role": "user", "content": self.prompt_builder.build_prompt(intent, available_actions, context)},
                 ],
                 response_format={"type": "json_object"},
             )

@@ -56,6 +56,7 @@ from src.core.monitoring import (
     BudgetGuard,
     DuplicateNodeIdError,
     ExecutionMonitor,
+    LLMReplanAdvisor,
     NodeState,
     PlanCursor,
     PlanRepair,
@@ -65,6 +66,12 @@ from src.core.monitoring import (
     find_duplicate_node_ids,
 )
 from src.core.monitoring.trigger import TriggerConfig
+from src.blackboard.client import (
+    subscribe_blackboard,
+    subscriber_topic,
+    try_query_blackboard,
+    unsubscribe_blackboard,
+)
 
 
 # ----------------------------------------------------------------------
@@ -225,7 +232,8 @@ class IntentionalAgent(Agent):
     # ------------------------------------------------------------------
     # plan_intention（與 v1 相同）
     # ------------------------------------------------------------------
-    def plan_intention(self, intention: str) -> dict[str, Any]:
+    def plan_intention(self, intention: str, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """規劃意圖。context 為重規劃脈絡（見 PlanRepair.build_replan_context），只在重規劃時提供。"""
         norm = self.domain.normalize(intention)
         subs = self.break_down_intention(norm)
 
@@ -251,7 +259,10 @@ class IntentionalAgent(Agent):
         if gate_reject is not None:
             return gate_reject
 
-        plan = self.planner.plan(norm, chosen_actions)
+        if context:
+            plan = self.planner.plan(norm, chosen_actions, context=context)
+        else:
+            plan = self.planner.plan(norm, chosen_actions)
 
         illegal_atoms = self._find_illegal_atomic_actions(plan, allowed_action_names)
         if illegal_atoms:
@@ -577,7 +588,8 @@ class IntentionalAgent(Agent):
         dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
         env_facts_provider: Callable[[], dict[str, Any]] | None = None,
         subtree_planner: Callable[[str, dict[str, Any] | None], dict[str, Any] | None] | None = None,
-        root_planner: Callable[[str], dict[str, Any] | None] | None = None,
+        root_planner: Callable[..., dict[str, Any] | None] | None = None,
+        llm_decider: Callable[..., ReplanDecision] | None = None,
     ) -> dict[str, Any]:
         """執行 plan 並啟用監測迴圈。
 
@@ -587,9 +599,11 @@ class IntentionalAgent(Agent):
             trigger_config: 自訂觸發策略
             dispatcher: 自訂 dispatch 函式（測試用），簽名 (node, payload) -> None。
                 若不指定，使用 self.publish 對 broker 派工。
-            env_facts_provider: 取得當下環境事實的函式（給 trigger / planner_callback 用）
-            subtree_planner: 子樹重生函式 (sub_intent, env_facts) -> plan dict
-            root_planner: 根層重生函式 (intent) -> plan dict
+            env_facts_provider: 取得當下環境事實的函式；不指定時依 DomainProfile.env_fact_queries 查黑板
+            subtree_planner: 子樹重生函式 (sub_intent, context) -> plan dict
+            root_planner: 根層重生函式 (intent) 或 (intent, context) -> plan dict
+            llm_decider: 自訂 LLM 判斷器（測試用）；不指定時使用 LLMReplanAdvisor，
+                是否啟用由 intent.monitoring.enable_llm_assist 決定
         """
         if plan.get("type") == "leaf_unresolved":
             logger.warning("Plan unresolved, skip execution.")
@@ -607,86 +621,91 @@ class IntentionalAgent(Agent):
         guard = BudgetGuard(budget)
         monitor = self._ensure_monitor()
         trigger = ReplanTrigger(
-            config=trigger_config,
+            config=trigger_config or self._build_trigger_config(),
             budget_guard=guard,
             llm=self.llm,
             logger=logger,
+            llm_decider=llm_decider or LLMReplanAdvisor(self.llm, logger=logger),
         )
         repair = PlanRepair(
             budget_guard=guard,
             planner_callback=subtree_planner or self._default_subtree_planner,
             root_planner_callback=root_planner or self._default_root_planner,
-            env_facts_provider=env_facts_provider,
+            env_facts_provider=env_facts_provider or self._default_env_facts_provider(),
             logger=logger,
         )
 
-        # 2) 確保訂閱 result topics（若 broker 已連線）
+        # 2) 確保訂閱 result topics 與黑板環境事件（若 broker 已連線）
         self._ensure_result_subscriptions()
+        self._ensure_env_subscriptions()
 
-        # 3) 主迴圈
-        loop_intent = plan.get("intent") or self.intention
-        idle_polls = 0
-        while not cursor.done() and not guard.exhausted():
-            # 3a) drain inbox
-            changes = monitor.drain_changes()
-            results = monitor.drain_results()
+        try:
+            # 3) 主迴圈
+            loop_intent = plan.get("intent") or self.intention
+            idle_polls = 0
+            while not cursor.done() and not guard.exhausted():
+                # 3a) drain inbox
+                changes = monitor.drain_changes()
+                results = monitor.drain_results()
 
-            # 3b) 把 results 套回 cursor；未知或過期（retry 前舊派工）的結果不交給 trigger
-            fresh: list[ActionResult] = []
-            for ar in results:
-                rec = cursor.accept_action_result(ar.task_id, {
-                    "task_id": ar.task_id,
-                    "ok": ar.ok,
-                    "cancelled": ar.cancelled,
-                    "error": ar.error,
-                    "message": ar.message,
-                    "result": ar.result,
-                    "task": ar.task,
-                })
-                if rec is not None:
-                    fresh.append(ar)
+                # 3b) 把 results 套回 cursor；未知或過期（retry 前舊派工）的結果不交給 trigger
+                fresh: list[ActionResult] = []
+                for ar in results:
+                    rec = cursor.accept_action_result(ar.task_id, {
+                        "task_id": ar.task_id,
+                        "ok": ar.ok,
+                        "cancelled": ar.cancelled,
+                        "error": ar.error,
+                        "message": ar.message,
+                        "result": ar.result,
+                        "task": ar.task,
+                    })
+                    if rec is not None:
+                        fresh.append(ar)
 
-            # 3b-1) 逾時未回報的節點視同失敗，交給 trigger 走 retry / replan
-            fresh.extend(self._expire_overdue_atomics(cursor, budget, dispatcher=dispatcher))
+                # 3b-1) 逾時未回報的節點視同失敗，交給 trigger 走 retry / replan
+                fresh.extend(self._expire_overdue_atomics(cursor, budget, dispatcher=dispatcher))
 
-            # 3c) 諮詢 trigger
-            decision = trigger.decide(
-                action_results=fresh,
-                env_changes=changes,
-                cursor=cursor,
-                intent=loop_intent,
-            )
-            if decision.kind == TriggerKind.ABORT:
-                logger.warning("Trigger ABORT: %s", decision.reason)
-                self._cancel_in_flight(cursor, reason=f"abort:{decision.reason}", dispatcher=dispatcher)
-                break
-            if decision.is_actionable():
-                self._cancel_in_flight_for_decision(cursor, decision, dispatcher=dispatcher)
-                outcome = repair.apply(decision, cursor, intent=loop_intent)
-                logger.info("Repair outcome: %s", outcome)
+                # 3c) 諮詢 trigger
+                decision = trigger.decide(
+                    action_results=fresh,
+                    env_changes=changes,
+                    cursor=cursor,
+                    intent=loop_intent,
+                )
+                if decision.kind == TriggerKind.ABORT:
+                    logger.warning("Trigger ABORT: %s", decision.reason)
+                    self._cancel_in_flight(cursor, reason=f"abort:{decision.reason}", dispatcher=dispatcher)
+                    break
+                if decision.is_actionable():
+                    self._cancel_in_flight_for_decision(cursor, decision, dispatcher=dispatcher)
+                    outcome = repair.apply(decision, cursor, intent=loop_intent)
+                    logger.info("Repair outcome: %s", outcome)
 
-            # 3d) 派工 ready atomics
-            ready = cursor.next_ready_atomics()
-            dispatched_now = 0
-            for rec in ready:
-                self._dispatch_atomic(rec, cursor, monitor, dispatcher=dispatcher, budget=budget)
-                dispatched_now += 1
+                # 3d) 派工 ready atomics
+                ready = cursor.next_ready_atomics()
+                dispatched_now = 0
+                for rec in ready:
+                    self._dispatch_atomic(rec, cursor, monitor, dispatcher=dispatcher, budget=budget)
+                    dispatched_now += 1
 
-            # 3e) 等待信號或 idle 自旋限制
-            if dispatched_now == 0 and not changes and not results and not fresh:
-                got = monitor.wait_for_signal(timeout=budget.poll_interval_sec)
-                if not got:
-                    idle_polls += 1
-                    # 避免無限 idle（例如 dispatcher 是 mock 但忘了回傳）：
-                    # 若所有 atomic 皆 IN_FLIGHT 而沒有任何結果，繼續等（node_timeout_sec 保證不會無限等）；
-                    # 若全 PENDING 也沒人 dispatch 成功，視為卡住 → ABORT
-                    if idle_polls >= 5 and not any(
-                        r.state == NodeState.IN_FLIGHT for r in cursor.all_records()
-                    ):
-                        logger.warning("Monitoring loop idle with no in-flight tasks; aborting.")
-                        break
-                else:
-                    idle_polls = 0
+                # 3e) 等待信號或 idle 自旋限制
+                if dispatched_now == 0 and not changes and not results and not fresh:
+                    got = monitor.wait_for_signal(timeout=budget.poll_interval_sec)
+                    if not got:
+                        idle_polls += 1
+                        # 避免無限 idle（例如 dispatcher 是 mock 但忘了回傳）：
+                        # 若所有 atomic 皆 IN_FLIGHT 而沒有任何結果，繼續等（node_timeout_sec 保證不會無限等）；
+                        # 若全 PENDING 也沒人 dispatch 成功，視為卡住 → ABORT
+                        if idle_polls >= 5 and not any(
+                            r.state == NodeState.IN_FLIGHT for r in cursor.all_records()
+                        ):
+                            logger.warning("Monitoring loop idle with no in-flight tasks; aborting.")
+                            break
+                    else:
+                        idle_polls = 0
+        finally:
+            self._release_env_subscriptions()
 
         # 4) 收尾
         summary = cursor.summary()
@@ -698,10 +717,7 @@ class IntentionalAgent(Agent):
     # Monitoring helpers
     # ------------------------------------------------------------------
     def _build_budget(self) -> Budget:
-        cfg = self.agent_config or {}
-        m = cfg.get("intent", {}).get("monitoring") if isinstance(cfg.get("intent"), dict) else {}
-        if not isinstance(m, dict):
-            m = {}
+        m = self._monitoring_config()
         # node_timeout_sec <= 0 表示不限（TOML 無 null 可用）
         node_timeout = float(m.get("node_timeout_sec", 30.0))
         return Budget(
@@ -717,6 +733,93 @@ class IntentionalAgent(Agent):
         if self._monitor is None:
             self._monitor = ExecutionMonitor(logger=logger)
         return self._monitor
+
+    def _monitoring_config(self) -> dict[str, Any]:
+        cfg = self.agent_config or {}
+        m = cfg.get("intent", {}).get("monitoring") if isinstance(cfg.get("intent"), dict) else None
+        return m if isinstance(m, dict) else {}
+
+    def _build_trigger_config(self) -> TriggerConfig:
+        """依 intent.monitoring 設定與 DomainProfile 建立 TriggerConfig。"""
+        m = self._monitoring_config()
+        tc = TriggerConfig(
+            enable_llm_assist=bool(m.get("enable_llm_assist", False)),
+            llm_max_calls=int(m.get("llm_max_calls", 10)),
+        )
+        prefixes = self._topic_prefixes(self.domain.env_subscriptions)
+        if prefixes:
+            tc.relevant_topic_prefixes = prefixes
+        return tc
+
+    @staticmethod
+    def _topic_prefixes(patterns: list[str] | None) -> tuple[str, ...]:
+        """把訂閱 pattern 轉成 trigger 用的 topic 前綴（"Zone/*/*" → "Zone/"）。"""
+        prefixes: list[str] = []
+        for pattern in patterns or []:
+            prefix = str(pattern).split("*", 1)[0]
+            if prefix not in prefixes:
+                prefixes.append(prefix)
+        return tuple(prefixes)
+
+    def _bb_requester_id(self) -> str:
+        return str(getattr(self, "agent_id", "") or "intentional_agent")
+
+    def _bb_timeout(self) -> float:
+        return float(self._monitoring_config().get("blackboard_timeout_sec", 2.0))
+
+    def _ensure_env_subscriptions(self) -> None:
+        """向黑板代理訂閱環境變動，事件轉入 ExecutionMonitor；可重入。
+
+        pattern 來自 DomainProfile.env_subscriptions。黑板代理沒回應時只記 warning，
+        監測迴圈仍會依動作結果運作。
+        """
+        if self._bb_subs_active:
+            return
+        patterns = [p for p in (self.domain.env_subscriptions or []) if p]
+        if not patterns:
+            logger.info("Domain profile has no env_subscriptions; environment changes will not trigger replanning.")
+            return
+        monitor = self._ensure_monitor()
+        requester_id = self._bb_requester_id()
+        try:
+            self.subscribe(subscriber_topic(requester_id), "dict", monitor.on_env_event)
+        except Exception as e:
+            logger.warning("Subscribe blackboard events failed: %s", e)
+            return
+        subscribed: list[str] = []
+        for pattern in patterns:
+            if subscribe_blackboard(self, pattern, requester_id=requester_id, timeout=self._bb_timeout()) is None:
+                # 黑板代理沒回應時不再逐一等待逾時
+                logger.warning("Blackboard subscription failed for %s; is BlackboardAgent running?", pattern)
+                break
+            subscribed.append(pattern)
+        self._bb_subs_active = bool(subscribed)
+        if subscribed:
+            logger.info("Watching blackboard changes: %s", subscribed)
+
+    def _release_env_subscriptions(self) -> None:
+        if not self._bb_subs_active:
+            return
+        unsubscribe_blackboard(self, requester_id=self._bb_requester_id(), timeout=self._bb_timeout())
+        self._bb_subs_active = False
+
+    def _default_env_facts_provider(self) -> Callable[[], dict[str, Any]] | None:
+        return self._collect_env_facts if self.domain.env_fact_queries else None
+
+    def _collect_env_facts(self) -> dict[str, Any]:
+        """依 DomainProfile.env_fact_queries 經黑板代理查詢目前的環境事實（給重規劃用）。"""
+        facts: dict[str, Any] = {}
+        unavailable: list[str] = []
+        for name, cypher in (self.domain.env_fact_queries or {}).items():
+            rows = try_query_blackboard(self, cypher, timeout=self._bb_timeout())
+            if rows is None:
+                unavailable.append(name)
+            else:
+                facts[name] = rows
+        if unavailable:
+            # 讓 LLM 知道是「查不到」而不是「沒有異常」
+            facts["_unavailable"] = unavailable
+        return facts
 
     def _ensure_result_subscriptions(self) -> None:
         """訂閱 info.result / navigation.result；可重入。
@@ -856,7 +959,11 @@ class IntentionalAgent(Agent):
             if rec is None or rec.state != NodeState.IN_FLIGHT or not rec.task_id:
                 continue
             self._send_cancel(rec, reason=f"decision:{decision.kind.value}", dispatcher=dispatcher)
-            cursor.cancel_in_flight(nid, reason=decision.kind.value)
+            if decision.kind in (TriggerKind.RETRY_NODE, TriggerKind.REPAIR_NODE):
+                # 同一節點要重派：標為 CANCELLED 才能 reset_for_retry（舊派工的遲到結果會被忽略）
+                cursor.mark_cancelled(nid, result={"reason": f"decision:{decision.kind.value}"})
+            else:
+                cursor.cancel_in_flight(nid, reason=decision.kind.value)
 
     def _send_cancel(
         self,
@@ -886,16 +993,17 @@ class IntentionalAgent(Agent):
     # Default planner callbacks（接到 RecursivePlanner）
     # ------------------------------------------------------------------
     def _default_subtree_planner(
-        self, sub_intent: str, env_facts: dict[str, Any] | None
+        self, sub_intent: str, context: dict[str, Any] | None
     ) -> dict[str, Any] | None:
         """REPLAN_SUBTREE 預設實作：以 sub_intent 走一遍 plan_intention。
 
-        環境事實預留為未來 prompt 強化（目前不直接注入，避免污染既有 prompt）。
+        context（重規劃原因、受影響步驟、環境事實）會放進拆解 prompt，
+        讓 LLM 依新的狀況產生不同的子計畫。
         """
         if not sub_intent:
             return None
         try:
-            sub_plan = self.plan_intention(sub_intent)
+            sub_plan = self.plan_intention(sub_intent, context=context)
         except Exception as e:
             logger.warning("Subtree planning failed: %s", e)
             return None
@@ -903,11 +1011,11 @@ class IntentionalAgent(Agent):
             return None
         return sub_plan
 
-    def _default_root_planner(self, intent: str) -> dict[str, Any] | None:
+    def _default_root_planner(self, intent: str, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
         if not intent:
             return None
         try:
-            new_plan = self.plan_intention(intent)
+            new_plan = self.plan_intention(intent, context=context)
         except Exception as e:
             logger.warning("Root planning failed: %s", e)
             return None

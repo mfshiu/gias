@@ -49,6 +49,7 @@ class BlackboardAgent(Agent):
 
     CONTROL_TOPIC = "blackboard.control"
     EVENT_TOPIC_PREFIX = "blackboard.event"
+    SUBSCRIBER_TOPIC_PREFIX = "blackboard.subscriber"
 
     def __init__(
         self,
@@ -203,7 +204,7 @@ class BlackboardAgent(Agent):
 
     def _forward_to_requester(self, event: BlackboardEvent, requester_id: str) -> None:
         """將事件轉發給特定 requester（透過 MQTT topic）"""
-        mqtt_topic = f"blackboard.subscriber.{requester_id}"
+        mqtt_topic = f"{self.SUBSCRIBER_TOPIC_PREFIX}.{requester_id}"
         try:
             self.publish(mqtt_topic, event.to_dict())
         except Exception as e:

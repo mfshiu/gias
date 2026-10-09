@@ -8,15 +8,19 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.app_helper import get_agent_config
+from src.blackboard.client import subscriber_topic
+from src.core.intent.domain_profile import DomainProfile
 from src.core.intentional_agent import IntentionalAgent
 from src.core.monitoring import (
     Budget,
     NodeState,
+    ReplanDecision,
     TriggerKind,
 )
 from src.core.monitoring.trigger import TriggerConfig
@@ -33,11 +37,16 @@ def _minimal_agent_config() -> dict:
         cfg = get_agent_config()
         if cfg.get("llm") and cfg.get("broker"):
             cfg = dict(cfg)
-            cfg.setdefault("intent", {}).setdefault("monitoring", {
+            intent = dict(cfg.get("intent") or {})
+            monitoring = dict(intent.get("monitoring") or {
                 "max_replans": 2,
                 "max_retries_per_node": 1,
                 "poll_interval_sec": 0.02,
             })
+            # 單元測試不可呼叫真實 LLM（即使 gias.toml 啟用了 enable_llm_assist）
+            monitoring["enable_llm_assist"] = False
+            intent["monitoring"] = monitoring
+            cfg["intent"] = intent
             return cfg
     except Exception:
         pass
@@ -478,3 +487,237 @@ def test_plan_with_duplicate_node_ids_is_rejected():
     assert result["ok"] is False
     assert "id 重複" in result["message"]
     assert disp.call_log == []
+
+
+# ----------------------------------------------------------------------
+# L-01：黑板環境事件接進監測迴圈
+# ----------------------------------------------------------------------
+class _FakeBlackboard:
+    """取代黑板 client 函式：記錄訂閱、保存事件 handler，並可模擬黑板代理推送事件。"""
+
+    def __init__(self, agent, *, available=True):
+        self.agent = agent
+        self.available = available
+        self.patterns = []
+        self.unsubscribed = 0
+        self.handlers = {}
+
+    def subscribe(self, topic, data_type="str", topic_handler=None):
+        self.handlers[topic] = topic_handler
+
+    def subscribe_blackboard(self, agent, pattern, *, requester_id, timeout=2.0):
+        self.patterns.append((pattern, requester_id))
+        return f"sub-{len(self.patterns)}" if self.available else None
+
+    def unsubscribe_blackboard(self, agent, *, requester_id, timeout=2.0):
+        self.unsubscribed += 1
+        return True
+
+    def emit(self, event):
+        topic = subscriber_topic(self.agent._bb_requester_id())
+        self.handlers[topic](topic, event)
+
+
+@contextmanager
+def _fake_blackboard(agent, *, available=True):
+    bb = _FakeBlackboard(agent, available=available)
+    with patch.object(agent, "subscribe", bb.subscribe), \
+         patch("src.core.intentional_agent.subscribe_blackboard", bb.subscribe_blackboard), \
+         patch("src.core.intentional_agent.unsubscribe_blackboard", bb.unsubscribe_blackboard):
+        yield bb
+
+
+def _no_llm(**kwargs):
+    raise AssertionError("LLM should not be consulted in this test")
+
+
+# BlackboardWatcher 對「Zone 的 CURRENT_STATE 關係改變」實際送出的事件格式
+_ZONE_CROWDED_EVENT = {
+    "topic": "Zone/CURRENT_STATE/State",
+    "action": "create",
+    "new_value": {"source_id": "AI_Tech_Area", "target_id": "Crowded"},
+    "metadata": {"source_label": "Zone", "source_id": "AI_Tech_Area", "rel_type": "CURRENT_STATE",
+                 "target_label": "State", "target_id": "Crowded"},
+}
+
+
+def test_blackboard_event_reaches_monitor_and_triggers_replan():
+    """舊行為：沒有任何地方訂閱黑板事件，環境改變永遠不會觸發重規劃。"""
+    agent = _make_agent()
+    agent.domain = DomainProfile(env_subscriptions=["Zone/*/*"])
+    plan = _root([
+        _composite("L2-1", [
+            _atomic("a", task="LocateExhibit", topic="navigation.request", intent="去 AI 區", target="AI_Tech_Area"),
+        ], intent="去 AI 區"),
+    ])
+    new_sub = _composite("L2-1-NEW", [_atomic("na", task="SuggestRoute", topic="navigation.request", intent="繞道")])
+    calls, cancelled = [], []
+
+    with _fake_blackboard(agent) as bb:
+        def dispatcher(node, payload):
+            if node.get("_cancel"):
+                cancelled.append(payload["task_id"])
+                return
+            calls.append(payload["task"])
+            if payload["task"] == "LocateExhibit":
+                # 導航進行中，黑板回報 AI 區變擁擠
+                threading.Timer(0.05, bb.emit, args=[_ZONE_CROWDED_EVENT]).start()
+                return
+            agent._monitor.on_action_result("navigation.result", {
+                "task_id": payload["task_id"], "ok": True, "task": payload["task"],
+            })
+
+        result = agent.execute_plan_with_monitoring(
+            plan,
+            dispatcher=dispatcher,
+            subtree_planner=lambda intent, context: new_sub,
+            llm_decider=_no_llm,
+            budget=Budget(max_replans=2, max_retries_per_node=1, poll_interval_sec=0.02, deadline_sec=5.0),
+        )
+
+    assert bb.patterns == [("Zone/*/*", agent._bb_requester_id())]
+    assert calls == ["LocateExhibit", "SuggestRoute"]
+    assert len(cancelled) == 1
+    assert result["ok"] is True
+    assert bb.unsubscribed == 1   # 結束時釋放黑板上的訂閱
+
+
+def test_monitoring_still_works_when_blackboard_agent_is_down():
+    agent = _make_agent()
+    agent.domain = DomainProfile(env_subscriptions=["Zone/*/*", "Booth/*/*"])
+    with _fake_blackboard(agent, available=False) as bb:
+        disp = make_dispatcher(agent)
+        result = agent.execute_plan_with_monitoring(_root([_atomic("a", task="ExplainExhibit")]), dispatcher=disp)
+    assert result["ok"] is True
+    assert len(bb.patterns) == 1      # 第一個 pattern 失敗後不再逐一等待逾時
+    assert bb.unsubscribed == 0
+
+
+def test_generic_profile_does_not_subscribe_to_blackboard():
+    agent = _make_agent()
+    with _fake_blackboard(agent) as bb:
+        agent.execute_plan_with_monitoring(_root([_atomic("a", task="ExplainExhibit")]), dispatcher=make_dispatcher(agent))
+    assert bb.patterns == []
+
+
+def test_build_trigger_config_reads_settings_and_domain_prefixes():
+    agent = _make_agent()
+    agent.domain = DomainProfile(env_subscriptions=["Zone/*/*", "*/CONNECTED_TO/*"])
+    agent.agent_config = {"intent": {"monitoring": {"enable_llm_assist": True, "llm_max_calls": 3}}}
+    tc = agent._build_trigger_config()
+    assert (tc.enable_llm_assist, tc.llm_max_calls) == (True, 3)
+    assert tc.relevant_topic_prefixes == ("Zone/", "")
+    agent.domain = DomainProfile()
+    agent.agent_config = {}
+    tc = agent._build_trigger_config()
+    assert tc.enable_llm_assist is False
+    assert tc.relevant_topic_prefixes == TriggerConfig().relevant_topic_prefixes
+
+
+# ----------------------------------------------------------------------
+# L-02：重規劃時帶入環境事實與重規劃原因
+# ----------------------------------------------------------------------
+def test_replan_context_contains_blackboard_env_facts():
+    agent = _make_agent()
+    agent.domain = DomainProfile(env_fact_queries={"zone_states": "MATCH (z:Zone) RETURN z"})
+    rows = [{"zone": "AI_Tech_Area", "state": "Closed"}]
+    plan = _root([_composite("L2-1", [_atomic("a", task="ExplainExhibit")], intent="介紹展品")])
+    captured = {}
+
+    def planner(sub_intent, context):
+        captured["context"] = context
+        return _composite("N", [_atomic("na", task="SuggestRoute")])
+
+    disp = make_dispatcher(agent, responses_by_task={
+        "ExplainExhibit": [{"ok": False, "error": "booth closed"}, {"ok": False, "error": "booth closed"}],
+    })
+    with patch("src.core.intentional_agent.try_query_blackboard", return_value=rows):
+        result = agent.execute_plan_with_monitoring(plan, dispatcher=disp, subtree_planner=planner, llm_decider=_no_llm)
+
+    assert result["ok"] is True
+    ctx = captured["context"]
+    assert ctx["env_facts"] == {"zone_states": rows}
+    assert ctx["replan"]["kind"] == "replan_subtree"
+    assert ctx["replan"]["affected_steps"][0]["task"] == "ExplainExhibit"
+    assert ctx["replan"]["affected_steps"][0]["error"] == "booth closed"
+
+
+def test_collect_env_facts_marks_unavailable_queries():
+    agent = _make_agent()
+    agent.domain = DomainProfile(env_fact_queries={"ok_q": "Q1", "down_q": "Q2"})
+    with patch("src.core.intentional_agent.try_query_blackboard",
+               side_effect=lambda a, cypher, **kw: [{"x": 1}] if cypher == "Q1" else None):
+        facts = agent._collect_env_facts()
+    assert facts == {"ok_q": [{"x": 1}], "_unavailable": ["down_q"]}
+
+
+def test_default_planners_forward_context_to_plan_intention():
+    agent = _make_agent()
+    seen = []
+
+    def fake_plan_intention(intention, *, context=None):
+        seen.append((intention, context))
+        return _root([_atomic("1", task="T")])
+
+    agent.plan_intention = fake_plan_intention
+    ctx = {"replan": {"reason": "r"}, "env_facts": {"k": []}}
+    assert agent._default_subtree_planner("sub", ctx) is not None
+    assert agent._default_root_planner("root", ctx) is not None
+    assert seen == [("sub", ctx), ("root", ctx)]
+
+
+# ----------------------------------------------------------------------
+# L-03：LLM 輔助判斷接線（REPAIR_NODE 可達、IN_FLIGHT 節點可重派）
+# ----------------------------------------------------------------------
+def test_llm_assist_repairs_failed_node_params():
+    agent = _make_agent()
+    plan = _root([_atomic("a", task="LocateExhibit", topic="navigation.request", target="AI_Tech_Aera")])
+
+    def decider(*, intent, env_changes, action_results, cursor):
+        return ReplanDecision(kind=TriggerKind.REPAIR_NODE, affected_node_ids=(action_results[0].node_id,),
+                              new_params={"target_name": "AI_Tech_Area"}, reason="llm: typo in target")
+
+    disp = make_dispatcher(agent, responses_by_task={
+        "LocateExhibit": [{"ok": False, "error": "unknown target AI_Tech_Aera"}, {"ok": True}],
+    })
+    result = agent.execute_plan_with_monitoring(
+        plan, dispatcher=disp, trigger_config=TriggerConfig(enable_llm_assist=True), llm_decider=decider,
+    )
+    assert result["ok"] is True
+    assert [c["payload"]["params"]["target_name"] for c in disp.call_log] == ["AI_Tech_Aera", "AI_Tech_Area"]
+
+
+def test_llm_retry_of_in_flight_node_cancels_and_redispatches():
+    """舊行為：IN_FLIGHT 節點被標為 OBSOLETE，reset_for_retry 失敗，節點不會重派。"""
+    agent = _make_agent()
+    plan = _root([_composite("L2-1", [
+        _atomic("a", task="LocateExhibit", topic="navigation.request", target="AI_Tech_Area"),
+    ])])
+    attempts = []
+
+    def dispatcher(node, payload):
+        if node.get("_cancel"):
+            agent._monitor.on_action_result("navigation.result", {
+                "task_id": payload["task_id"], "ok": False, "cancelled": True,
+            })
+            return
+        attempts.append(payload["task_id"])
+        if len(attempts) == 1:
+            threading.Timer(0.05, agent._monitor.on_env_event, args=["bb", {
+                "topic": "Zone/Hall_B/crowd_level", "action": "update", "new_value": "Crowded",
+            }]).start()
+            return
+        agent._monitor.on_action_result("navigation.result", {"task_id": payload["task_id"], "ok": True})
+
+    def decider(*, intent, env_changes, action_results, cursor):
+        return ReplanDecision(kind=TriggerKind.RETRY_NODE, affected_node_ids=("a",), reason="llm: refresh route")
+
+    result = agent.execute_plan_with_monitoring(
+        plan,
+        dispatcher=dispatcher,
+        trigger_config=TriggerConfig(enable_llm_assist=True, relevant_topic_prefixes=("Zone/",)),
+        llm_decider=decider,
+        budget=Budget(max_replans=1, max_retries_per_node=1, poll_interval_sec=0.02, deadline_sec=5.0),
+    )
+    assert len(attempts) == 2
+    assert result["ok"] is True

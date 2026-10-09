@@ -185,3 +185,90 @@ def test_apply_abort_returns_applied_true():
     out = PlanRepair().apply(ReplanDecision.abort("any"), c)
     assert out["applied"] is True
     assert out["kind"] == "abort"
+
+
+# ----------------------------------------------------------------------
+# L-02：重規劃脈絡（原因、受影響步驟、環境事實）要傳給 planner
+# ----------------------------------------------------------------------
+def _failed_a_cursor():
+    c = PlanCursor(_plan_two_branches())
+    tid = c.mark_dispatched("a")
+    c.accept_action_result(tid, {"task_id": tid, "ok": False, "error": "area closed"})
+    return c
+
+
+def _subtree_decision():
+    return ReplanDecision(kind=TriggerKind.REPLAN_SUBTREE, affected_node_ids=("a",),
+                          subtree_root_id="L2-1", reason="node a failed; retries exhausted")
+
+
+def _new_subtree():
+    return {"id": "N", "sub_plans": [
+        {"id": "na", "type": "atomic", "is_atomic": True, "task": "SuggestRoute", "sub_plans": []},
+    ], "execution_logic": []}
+
+
+def test_subtree_planner_receives_replan_context_with_env_facts():
+    c = _failed_a_cursor()
+    captured = {}
+
+    def planner(sub_intent, context):
+        captured["context"] = context
+        return _new_subtree()
+
+    facts = {"zone_states": [{"zone": "AI_Tech_Area", "state": "Closed"}]}
+    repair = PlanRepair(budget_guard=BudgetGuard(), planner_callback=planner, env_facts_provider=lambda: facts)
+    assert repair.apply(_subtree_decision(), c)["applied"] is True
+
+    ctx = captured["context"]
+    assert ctx["env_facts"] == facts
+    assert ctx["replan"]["kind"] == "replan_subtree"
+    assert ctx["replan"]["reason"] == "node a failed; retries exhausted"
+    step = ctx["replan"]["affected_steps"][0]
+    assert (step["id"], step["task"], step["error"]) == ("a", "LocateExhibit", "area closed")
+    assert step["params"] == {"target_name": "AI"}
+
+
+def test_env_facts_provider_failure_still_replans():
+    c = _failed_a_cursor()
+    captured = {}
+
+    def planner(sub_intent, context):
+        captured["context"] = context
+        return _new_subtree()
+
+    def broken():
+        raise RuntimeError("blackboard down")
+
+    repair = PlanRepair(budget_guard=BudgetGuard(), planner_callback=planner, env_facts_provider=broken)
+    assert repair.apply(_subtree_decision(), c)["applied"] is True
+    assert "env_facts" not in captured["context"]
+
+
+def test_root_planner_with_context_parameter_receives_context():
+    c = _failed_a_cursor()
+    captured = {}
+
+    def root_planner(intent, context):
+        captured["context"] = context
+        return {"id": "R", "type": "composite", "execution_logic": [], "sub_plans": [
+            {"id": "n1", "type": "atomic", "is_atomic": True, "task": "AnswerFAQ", "sub_plans": []}]}
+
+    repair = PlanRepair(budget_guard=BudgetGuard(), root_planner_callback=root_planner,
+                        env_facts_provider=lambda: {"closed_booths": []})
+    decision = ReplanDecision(kind=TriggerKind.REPLAN_ROOT, affected_node_ids=("a",), reason="r")
+    assert repair.apply(decision, c, intent="i")["applied"] is True
+    assert captured["context"]["replan"]["kind"] == "replan_root"
+    # 空的事實（{"closed_booths": []}）仍是有效資訊，不可被丟掉
+    assert captured["context"]["env_facts"] == {"closed_booths": []}
+
+
+def test_repair_pending_node_updates_params_without_consuming_retry():
+    c = PlanCursor(_plan_two_branches())
+    g = BudgetGuard(Budget(max_retries_per_node=1))
+    out = PlanRepair(budget_guard=g).apply(
+        ReplanDecision(kind=TriggerKind.REPAIR_NODE, affected_node_ids=("b",), new_params={"target_name": "Y"}), c)
+    assert out["applied"] is True
+    assert c.record("b").state == NodeState.PENDING
+    assert c.record("b").node["params"]["target_name"] == "Y"
+    assert g.retries_left("b") == 1

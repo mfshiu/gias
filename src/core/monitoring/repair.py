@@ -8,11 +8,16 @@ PlanRepair：把 ReplanDecision 套用到 PlanCursor。
 
 為了單元測試，本模組不直接相依 IntentionalAgent / RecursivePlanner；
 caller 在建構時注入 `planner_callback` / `root_planner_callback`。
+
+重規劃時會把「重規劃脈絡」傳給 planner（見 build_replan_context）：
+    {"replan": {"kind", "reason", "affected_steps": [...]}, "env_facts": {...}}
+planner_callback 簽名為 (sub_intent, context)；root_planner_callback 可為 (intent) 或 (intent, context)。
 """
 
 from __future__ import annotations
 
 import copy
+import inspect
 import logging
 import uuid
 from typing import Any, Callable
@@ -29,7 +34,7 @@ class PlanRepair:
         *,
         budget_guard=None,                                                   # BudgetGuard
         planner_callback: Callable[[str, dict[str, Any] | None], dict[str, Any] | None] | None = None,
-        root_planner_callback: Callable[[str], dict[str, Any] | None] | None = None,
+        root_planner_callback: Callable[..., dict[str, Any] | None] | None = None,
         env_facts_provider: Callable[[], dict[str, Any]] | None = None,
         logger: logging.Logger | None = None,
     ):
@@ -112,6 +117,10 @@ class PlanRepair:
         applied_ids: list[str] = []
         new_params = dict(decision.new_params or {})
         for nid in decision.affected_node_ids:
+            # 尚未派工的節點只需改參數，不消耗 retry 配額
+            if cursor.update_pending_params(nid, new_params):
+                applied_ids.append(nid)
+                continue
             if self.budget_guard is not None and not self.budget_guard.consume_retry(nid):
                 self.logger.info("Repair retry budget exhausted for node %s", nid)
                 continue
@@ -145,9 +154,9 @@ class PlanRepair:
             return {"applied": False, "kind": decision.kind.value, "reason": f"composite {composite_id} not found"}
 
         sub_intent = composite.get("intent") or intent
-        env_facts = self.env_facts_provider() if self.env_facts_provider else None
+        context = self.build_replan_context(decision, cursor)
         try:
-            new_subtree = self.planner_callback(sub_intent, env_facts)
+            new_subtree = self.planner_callback(sub_intent, context)
         except Exception as e:
             self.logger.warning("Subtree planner_callback failed: %s", e)
             return {"applied": False, "kind": decision.kind.value, "reason": f"planner failed: {e}"}
@@ -179,7 +188,10 @@ class PlanRepair:
         if self.root_planner_callback is None:
             return {"applied": False, "kind": decision.kind.value, "reason": "no root_planner_callback"}
         try:
-            new_plan = self.root_planner_callback(intent)
+            if _accepts_context(self.root_planner_callback):
+                new_plan = self.root_planner_callback(intent, self.build_replan_context(decision, cursor))
+            else:
+                new_plan = self.root_planner_callback(intent)
         except Exception as e:
             self.logger.warning("Root planner_callback failed: %s", e)
             return {"applied": False, "kind": decision.kind.value, "reason": f"planner failed: {e}"}
@@ -199,9 +211,56 @@ class PlanRepair:
         }
 
 
+    # ------------------------------------------------------------------
+    # Context
+    # ------------------------------------------------------------------
+    def build_replan_context(self, decision: ReplanDecision, cursor: PlanCursor) -> dict[str, Any]:
+        """整理給 planner 的重規劃脈絡：為何重規劃、哪些步驟出了問題、目前環境事實。
+
+        沒有新資訊的重規劃，LLM 多半會產出與原本相同的計畫。
+        """
+        affected: list[dict[str, Any]] = []
+        for nid in decision.affected_node_ids:
+            rec = cursor.record(nid)
+            if rec is None:
+                continue
+            affected.append({
+                "id": nid,
+                "intent": rec.node.get("intent", ""),
+                "task": rec.node.get("task"),
+                "params": rec.node.get("params") or {},
+                "state": rec.state.value,
+                "error": rec.error,
+            })
+        context: dict[str, Any] = {
+            "replan": {"kind": decision.kind.value, "reason": decision.reason, "affected_steps": affected},
+        }
+        if self.env_facts_provider is not None:
+            try:
+                facts = self.env_facts_provider()
+            except Exception as e:
+                self.logger.warning("env_facts_provider failed: %s", e)
+                facts = None
+            if facts:
+                context["env_facts"] = facts
+        return context
+
+
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+def _accepts_context(callback: Callable[..., Any]) -> bool:
+    """root_planner_callback 是否接受第二個參數（向後相容只收 intent 的 callable）。"""
+    try:
+        params = list(inspect.signature(callback).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+        return True
+    positional = [p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 2
+
+
 def _affected_parent_id(decision: ReplanDecision, cursor: PlanCursor) -> str | None:
     for nid in decision.affected_node_ids:
         rec = cursor.record(nid)

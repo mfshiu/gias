@@ -51,7 +51,7 @@
 |---|---|---|---|---|---|
 | **V-01** | 實驗驗證 | 導航實驗完全沒呼叫 IntentionalAgent，改用 Dijkstra 模擬，失敗則依 `replan_failure_probability` 隨機注入 | [runner.py:18](../navigation_scenario/runner.py#L18) | TSR 95%、RSR 80.9% 量到的是圖演算法，不是 GIAS 的重規劃 | 未處理 |
 | **V-02** | 實驗驗證 | 核心的監測執行路徑 `execute_plan_with_monitoring` 只有 mock 單元測試，沒有任何端到端實驗跑過 | [intentional_agent.py:508](../src/core/intentional_agent.py#L508) | 「監控與重新考慮」這項主張缺乏實驗支持 | 未處理 |
-| **L-01** | 閉環／監測 | 黑板環境事件沒有接進監測器：全 repo 沒有地方訂閱 `on_env_event`，`_bb_subs_active` 也從未使用（檔頭註解宣稱有訂閱） | [monitor.py:52](../src/core/monitoring/monitor.py#L52)、[intentional_agent.py:99](../src/core/intentional_agent.py#L99) | 環境改變永遠不會觸發重規劃，系統只對動作失敗反應，閉環沒有成立 | 未處理 |
+| **L-01** | 閉環／監測 | 黑板環境事件沒有接進監測器：全 repo 沒有地方訂閱 `on_env_event`，`_bb_subs_active` 也從未使用（檔頭註解宣稱有訂閱） | [monitor.py:52](../src/core/monitoring/monitor.py#L52)、[intentional_agent.py:99](../src/core/intentional_agent.py#L99) | 環境改變永遠不會觸發重規劃，系統只對動作失敗反應，閉環沒有成立 | 已修正（未 commit） |
 | **C-01** | 正確性 | 巢狀計畫的節點 ID 衝突：LLM 每層都從 "1" 開始編號，cursor 遇到重複 ID 就靜默略過（已實測重現，見附錄） | [planner.py:145](../src/core/intent/planner.py#L145)、[cursor.py:105](../src/core/monitoring/cursor.py#L105) | 子任務沒被執行，最後卻回報 `ok=True` | 已修正（未 commit） |
 | **C-02** | 正確性 | 沒有 action 或 topic 的 atomic 節點（`leaf_no_children`、`leaf_forced_atomic`，或 action 為空字串的節點）會繞過白名單檢查，被預設送到 `info.request`，而 InfoAgent 對未知 task 一律回成功 | [planner.py:122](../src/core/intent/planner.py#L122)、[planner.py:139](../src/core/intent/planner.py#L139)、[_executor_utils.py:55](../src/agents/_executor_utils.py#L55)、[info_agent.py:200](../src/agents/info_agent.py#L200) | 根本無法執行的步驟被記為成功（假成功） | 已修正（未 commit） |
 
@@ -62,8 +62,8 @@
 | **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 未處理 |
 | **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 未處理 |
 | **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 未處理 |
-| **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 未處理 |
-| **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 未處理 |
+| **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（未 commit） |
+| **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（未 commit） |
 | **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（未 commit） |
 | **C-04** | 正確性 | 節點沒有逾時機制，`deadline_sec` 預設為 None | [intentional_agent.py:613](../src/core/intentional_agent.py#L613)、[budget.py:20](../src/core/monitoring/budget.py#L20) | 執行端掛掉或訊息遺失時，迴圈會永遠等待 | 已修正（未 commit） |
 | **A-01** | 架構落差 | 意圖只是一個字串：沒有 Intention 模型和生命週期狀態，不支援多意圖、優先序或衝突管理，Agent 執行完就結束 | [intentional_agent.py:70](../src/core/intentional_agent.py#L70)、[intentional_agent.py:136](../src/core/intentional_agent.py#L136) | 「跨時間維持意圖」與 Bratman 意圖理論的主張沒有落實 | 未處理 |
@@ -131,6 +131,23 @@
 | C-04 | 新增節點逾時：`Budget.node_timeout_sec`（預設 30 秒，設定鍵 `intent.monitoring.node_timeout_sec`，≤ 0 表示不限），節點自身的 `deadline_sec` 優先。逾時節點會送 cancel，並當成失敗結果交給 trigger 走 retry / replan。順帶修正：retry 前舊派工遲到的結果原本會覆寫新一次派工的狀態，現在會被忽略 | `budget.py`、`cursor.py`、`intentional_agent.py`、`docs/monitoring_protocol.md` |
 
 新增回歸測試 37 個（`tests/intent/`、`tests/monitoring/test_cursor.py`、`tests/test_execute_plan_with_monitoring.py`、`tests/test_execute_plan.py`、`tests/agents/`）；離線測試共 606 個全數通過。
+
+另外，`tests/test_plan_intention_policy.py` 原本用「沒有任何步驟的空計畫」當作規劃成功的案例，C-02 修正後會被正確判為無法執行，因此把該測試的假計畫改成含一個可執行步驟。
+
+### 2026-10-09：L-01 ～ L-03（未 commit）
+
+| 編號 | 修正內容 | 主要檔案 |
+|---|---|---|
+| L-01 | 執行計畫時，IntentionalAgent 訂閱 `blackboard.subscriber.<agent_id>`（事件轉入 ExecutionMonitor），並對 `DomainProfile.env_subscriptions` 的每個 pattern 向黑板代理送 `subscribe`；結束時（finally）送 `unsubscribe`。黑板代理沒回應時只記 warning，不影響執行。trigger 改為也從 metadata 的 `node_id`／`source_id` 取區域名稱，才對得上 BlackboardWatcher 的關係事件（`Zone/CURRENT_STATE/State`）。`EXPO_PROFILE` 已設定監看 `Zone/*/*`、`Booth/*/*` | `intentional_agent.py`、`domain_profile.py`、`blackboard/client.py`、`blackboard/agent.py`、`trigger.py`、`run_intentional_agent.py` |
+| L-02 | PlanRepair 重規劃時整理「重規劃脈絡」：原因、受影響步驟（task、參數、錯誤）、以及依 `DomainProfile.env_fact_queries` 經黑板查到的環境事實，傳給 planner；`plan_intention` → RecursivePlanner → LLMDecomposer → PromptBuilder 一路帶入，prompt 多出 Replanning Context 段落與兩條規則（避開異常地點、不要重複失敗的步驟）。一般規劃的 prompt 不變。`EXPO_PROFILE` 已設定查詢擁擠／封閉區域、關閉攤位、不可用設施、封鎖通道 | `repair.py`、`intentional_agent.py`、`planner.py`、`llm_decomposer.py`、`prompt_builder.py`、`domain_profile.py` |
+| L-03 | 新增 `LLMReplanAdvisor`（預設注入 trigger），由 `intent.monitoring.enable_llm_assist` 控制（預設 false）。節點失敗時先問 LLM（可選 REPAIR_NODE 改參數重派），規則對應不到的相關環境變動也交給 LLM；LLM 回覆會驗證節點、狀態與預算，不合格或失敗時回到規則；每個 plan 最多詢問 `llm_max_calls` 次。順帶修正兩個讓 REPAIR／RETRY 實際無法生效的問題：對 IN_FLIGHT 節點的 RETRY／REPAIR 原本會把節點標為 OBSOLETE 而無法重派，現在標為 CANCELLED 後重派；尚未派工的節點可直接改參數（不消耗 retry 配額） | `llm_advisor.py`（新）、`trigger.py`、`repair.py`、`cursor.py`、`intentional_agent.py` |
+
+新增回歸測試 35 個（`tests/monitoring/test_llm_advisor.py`、`tests/intent/test_prompt_context.py`、`test_trigger.py`、`test_repair.py`、`test_cursor.py`、`tests/test_execute_plan_with_monitoring.py`），並以突變測試確認關鍵測試在還原修正後會失敗。離線測試共 643 個全數通過；加上 `tests/blackboard`、`tests/observer`、`tests/test_intentional_agent.py` 的非 integration 測試共 693 個通過、10 個略過。
+
+**尚未處理（與本批相關）**：
+- `tests/test_log_colors.py::test_log_colors_visual` 失敗，與本次修改無關（只涉及 `log_helper`）。
+- BlackboardWatcher 不監看關係屬性，因此 `CONNECTED_TO.blocked`（通道封鎖）不會產生事件；目前只能在重規劃時透過 `env_fact_queries` 取得。
+- 節點與環境事件的對應仍是子字串比對（C-08），區域 ID 與中文名稱寫法不同時需靠 LLM 輔助判斷。
 
 ---
 

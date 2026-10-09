@@ -134,7 +134,8 @@ class RecursivePlanner:
             self.logger.debug("Failed to get agent by action %s: %s", action_name, e)
         return None
 
-    def plan(self, intent, available_actions, *, depth=0, max_depth=4, scheduled_start="N/A", node_id="root"):
+    def plan(self, intent, available_actions, *, depth=0, max_depth=4, scheduled_start="N/A", node_id="root", context=None):
+        """遞迴拆解 intent。context 是重規劃脈絡（重規劃原因、環境事實），會傳給每一層的拆解。"""
         indent = "    " * depth
         prefix = "└── " if depth > 0 else "[ROOT] "
 
@@ -157,7 +158,10 @@ class RecursivePlanner:
 
         print(f"{indent}{prefix}處理意圖: {intent}")
 
-        result_json = self.decomposer.decompose(intent, available_actions)
+        if context:
+            result_json = self.decomposer.decompose(intent, available_actions, context=context)
+        else:
+            result_json = self.decomposer.decompose(intent, available_actions)
         if not result_json:
             current_node["error"] = "Decomposition failed"
             return current_node
@@ -228,6 +232,7 @@ class RecursivePlanner:
                     max_depth=max_depth,
                     scheduled_start=sched_time,
                     node_id=sub_id,
+                    context=context,
                 )
                 if child_tree:
                     current_node["sub_plans"].append(child_tree)

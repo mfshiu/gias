@@ -467,6 +467,16 @@ class PlanCursor:
             existing.update(new_params)
             rec.node["params"] = existing
 
+    def update_pending_params(self, node_id: str, new_params: dict[str, Any]) -> bool:
+        """覆蓋尚未派工（PENDING）節點的 params；節點不存在或不是 PENDING 時回傳 False。"""
+        rec = self._records.get(node_id)
+        if rec is None or rec.state != NodeState.PENDING:
+            return False
+        existing = dict(rec.node.get("params") or {})
+        existing.update(new_params or {})
+        rec.node["params"] = existing
+        return True
+
     def cancel_in_flight(self, node_id: str, *, reason: str = "") -> None:
         """把 IN_FLIGHT 節點先標為 OBSOLETE（IA 之後會送 *.cancel 給 executor）。"""
         rec = self._records.get(node_id)

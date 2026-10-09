@@ -55,6 +55,28 @@ EXPO_PROFILE = DomainProfile(
         "target_type": {"攤位": "booth", "展區": "exhibit_zone", "展品": "exhibit"},
         "facility_type": {"廁所": "restroom", "洗手間": "restroom", "出口": "exit", "服務台": "service_desk", "無障礙": "accessible"},
     },
+    # 執行期間監看的黑板變動：Zone 人潮狀態（屬性與 CURRENT_STATE 關係）、Booth 開放狀態
+    env_subscriptions=["Zone/*/*", "Booth/*/*"],
+    # 重規劃時提供給 LLM 的環境事實（只列出異常狀態，避免 prompt 過長）
+    env_fact_queries={
+        "zone_states": (
+            "MATCH (z:Zone)-[:CURRENT_STATE]->(s:State) "
+            "WHERE s.status_name IN ['Crowded', 'Closed'] "
+            "RETURN z.name AS zone, s.status_name AS state"
+        ),
+        "closed_booths": (
+            "MATCH (b:Booth) WHERE b.status IS NOT NULL AND b.status <> 'open' "
+            "RETURN b.id AS booth, b.status AS status"
+        ),
+        "unavailable_facilities": (
+            "MATCH (p:POI) WHERE p.facility_status = 'unavailable' "
+            "RETURN p.id AS poi, p.name AS name"
+        ),
+        "blocked_passages": (
+            "MATCH (a)-[r:CONNECTED_TO]->(b) WHERE r.blocked = true "
+            "RETURN coalesce(a.id, a.name) AS from, coalesce(b.id, b.name) AS to"
+        ),
+    },
 )
 
 

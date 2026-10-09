@@ -353,3 +353,12 @@ def test_overdue_in_flight_ignores_non_in_flight():
     tid = c.mark_dispatched("x")
     c.accept_action_result(tid, {"task_id": tid, "ok": True})
     assert c.overdue_in_flight(default_timeout_sec=1, now=c.record("x").dispatched_at + 100) == []
+
+
+def test_update_pending_params_only_touches_pending_nodes():
+    c = PlanCursor(_parallel_two_atomics())
+    assert c.update_pending_params("x", {"target_name": "B"}) is True
+    assert c.record("x").node["params"] == {"target_name": "B"}
+    c.mark_dispatched("y")
+    assert c.update_pending_params("y", {"target_name": "B"}) is False
+    assert c.update_pending_params("ghost", {"k": "v"}) is False

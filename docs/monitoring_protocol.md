@@ -150,6 +150,8 @@ execute_plan_with_monitoring(plan):
   cursor = PlanCursor(plan)
   monitor = ExecutionMonitor()
   budget = BudgetGuard(...)
+  訂閱 blackboard.subscriber.<agent_id> → monitor，並對 DomainProfile.env_subscriptions
+    的每個 pattern 送 blackboard.control {command: subscribe}（黑板代理沒回應則略過）
   while not cursor.done() and not budget.exhausted():
     drain monitor → (env_changes, action_results)
     action_results 中 task_id 不是節點目前派工的（retry 前舊派工遲到）→ 丟棄
@@ -162,8 +164,45 @@ execute_plan_with_monitoring(plan):
     for atom in next_atomics:
       dispatch_async(atom)   # publish + subscribe(return_topic)
     monitor.wait_one(timeout=poll_interval)
+  送 blackboard.control {command: unsubscribe}（finally，一定執行）
   return cursor.summary()
 ```
+
+### 7.1 環境監看與重規劃脈絡
+
+| 項目 | 來源 | 說明 |
+|------|------|------|
+| 監看哪些黑板變動 | `DomainProfile.env_subscriptions` | 例：`["Zone/*/*", "Booth/*/*"]`；空串列表示不監看。trigger 的相關 topic 前綴也由此推得（`"Zone/*/*"` → `"Zone/"`） |
+| 重規劃時的環境事實 | `DomainProfile.env_fact_queries` | `name -> Cypher`，經 `blackboard.control {command: query}` 查詢；查詢失敗的名稱列在 `_unavailable` |
+
+重規劃時 PlanRepair 會把下列脈絡交給 planner，planner 再放進拆解 prompt（一般規劃的 prompt 不變）：
+
+```json
+{
+  "replan": {
+    "kind": "replan_subtree",
+    "reason": "node a failed; retries exhausted",
+    "affected_steps": [{"id": "a", "task": "LocateExhibit", "params": {...}, "state": "failed", "error": "..."}]
+  },
+  "env_facts": {"zone_states": [{"zone": "AI_Tech_Area", "state": "Closed"}]}
+}
+```
+
+### 7.2 LLM 輔助判斷（選用）
+
+`intent.monitoring.enable_llm_assist = true` 時，trigger 會在下列情況詢問 LLM（`LLMReplanAdvisor`）：
+
+- 節點失敗：LLM 可依錯誤內容選擇 retry / **repair_node（改參數重派）** / replan / abort
+- 相關環境變動但規則對應不到節點（例：區域 ID 與中文名稱寫法不同）
+
+LLM 的回覆會先驗證（節點必須存在、狀態允許該操作、未超出 retry / replan 預算），不合格或 LLM 失敗時一律回到規則。每個 plan 最多詢問 `intent.monitoring.llm_max_calls` 次（預設 10）。
+
+| 設定鍵（`[intent.monitoring]`） | 預設 | 說明 |
+|------|------|------|
+| `node_timeout_sec` | 30 | 節點逾時；≤ 0 表示不限 |
+| `enable_llm_assist` | false | 啟用 LLM 輔助判斷 |
+| `llm_max_calls` | 10 | 每個 plan 詢問 LLM 的上限 |
+| `blackboard_timeout_sec` | 2 | 黑板訂閱 / 查詢的逾時秒數 |
 
 ---
 
