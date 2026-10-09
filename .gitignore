@@ -214,3 +214,5 @@ bak_gias_src.bat
 gias.toml
 mosquitto.bat
 src/gias-hyena.toml
+navigation_scenario_results/
+genexam_scenario_results/
