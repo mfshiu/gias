@@ -68,6 +68,72 @@ def find_duplicate_node_ids(plan: dict[str, Any] | None) -> list[str]:
     return dups
 
 
+def _sequence_deps(
+    sub_plans: list[dict] | None, execution_logic: list[dict] | None
+) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]]]:
+    """回傳 (id → 節點, id → 必須先完成的節點 id)。只看 Sequence；同 id 的重複節點取第一個。"""
+    id_to_node: dict[str, dict[str, Any]] = {}
+    for n in sub_plans or []:
+        if isinstance(n, dict):
+            id_to_node.setdefault(str(n.get("id", "")), n)
+    deps: dict[str, set[str]] = {nid: set() for nid in id_to_node}
+    for rel in execution_logic or []:
+        if not isinstance(rel, dict) or (rel.get("type") or "").strip().lower() != "sequence":
+            continue
+        from_id, to_id = str(rel.get("from_id", "")), str(rel.get("to_id", ""))
+        if from_id in id_to_node and to_id in id_to_node and from_id != to_id:
+            deps[to_id].add(from_id)
+    return id_to_node, deps
+
+
+def _reachable(start: str, deps: dict[str, set[str]], within: set[str]) -> set[str]:
+    """沿依賴往前（後續節點 → 前置節點）可到達的節點。"""
+    seen: set[str] = set()
+    stack = [d for d in deps[start] if d in within]
+    while stack:
+        nid = stack.pop()
+        if nid in seen:
+            continue
+        seen.add(nid)
+        stack.extend(d for d in deps[nid] if d in within)
+    return seen
+
+
+def _cycle_break_candidate(remaining: set[str], deps: dict[str, set[str]], order: dict[str, int]) -> str:
+    """沒有可執行節點時（依賴循環）選出要先放行的節點。
+
+    選「不依賴循環外未完成節點」的那個循環中，在 sub_plans 裡最早出現的節點；
+    依賴循環的下游節點不會被提前放行。
+    """
+    for nid in sorted(remaining, key=order.__getitem__):
+        reach = _reachable(nid, deps, remaining)
+        if nid not in reach:
+            continue
+        cycle = {m for m in reach if nid in _reachable(m, deps, remaining)} | {nid}
+        if all((deps[m] & remaining) <= cycle for m in cycle):
+            return nid
+    return min(remaining, key=order.__getitem__)
+
+
+def find_dependency_cycles(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """回傳各 composite 內形成循環的 Sequence 依賴：[{"composite_id", "node_ids"}]。"""
+    found: list[dict[str, Any]] = []
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict) or _is_atomic_node(node):
+            return
+        id_to_node, deps = _sequence_deps(node.get("sub_plans"), node.get("execution_logic"))
+        ids = set(id_to_node)
+        cyclic = sorted(nid for nid in ids if nid in _reachable(nid, deps, ids))
+        if cyclic:
+            found.append({"composite_id": str(node.get("id", "")), "node_ids": cyclic})
+        for child in node.get("sub_plans") or []:
+            walk(child)
+
+    walk(plan)
+    return found
+
+
 def _positive_float(value: Any) -> float | None:
     try:
         f = float(value)
@@ -212,38 +278,31 @@ class PlanCursor:
         """共用版本：與 IntentionalAgent._compute_execution_levels 同義。
 
         放在這裡是為了讓 cursor 與 IA 解耦；IA 可以委派給 cursor。
+        遇到依賴循環時一次只放行循環中最早出現的一個節點，其餘依賴照常遵守
+        （plan_intention 會先拒絕有循環的計畫；這裡是給直接傳入的計畫的保險）。
         """
-        id_to_node = {str(n.get("id", "")): n for n in (sub_plans or []) if isinstance(n, dict)}
+        id_to_node, deps = _sequence_deps(sub_plans, execution_logic)
         if not id_to_node:
             return [list(sub_plans or [])] if sub_plans else []
 
-        deps: dict[str, list[str]] = {to_id: [] for to_id in id_to_node}
-        for rel in execution_logic or []:
-            if (rel.get("type") or "").strip().lower() == "sequence":
-                from_id = str(rel.get("from_id", ""))
-                to_id = str(rel.get("to_id", ""))
-                if from_id in id_to_node and to_id in id_to_node and from_id != to_id:
-                    deps[to_id].append(from_id)
-
+        order = {nid: i for i, nid in enumerate(id_to_node)}
         levels: list[list[dict]] = []
-        remaining = set(id_to_node.keys())
+        remaining = set(id_to_node)
         while remaining:
-            ready = [nid for nid in remaining if all(d not in remaining for d in deps[nid])]
+            ready = [nid for nid in remaining if not (deps[nid] & remaining)]
             if not ready:
-                break
-            level = [id_to_node[nid] for nid in sorted(ready)]
-            levels.append(level)
-            for nid in ready:
-                remaining.discard(nid)
+                ready = [_cycle_break_candidate(remaining, deps, order)]
+            levels.append([id_to_node[nid] for nid in sorted(ready)])
+            remaining.difference_update(ready)
 
-        seen = {n.get("id") for level in levels for n in level}
-        orphans = [n for n in (sub_plans or []) if isinstance(n, dict) and n.get("id") not in seen]
-        if orphans:
-            if levels:
-                levels.insert(0, orphans)
-            else:
-                levels.append(orphans)
-        return levels if levels else []
+        # 與先前節點同 id 的重複節點（PlanCursor 會先拒絕，這裡只為舊路徑保險）排在最後
+        extras = [
+            n for n in sub_plans or []
+            if isinstance(n, dict) and id_to_node.get(str(n.get("id", ""))) is not n
+        ]
+        if extras:
+            levels.append(extras)
+        return levels
 
     def next_ready_atomics(self) -> list[NodeRecord]:
         """回傳目前可以立即派工的 atomic NodeRecord 清單。

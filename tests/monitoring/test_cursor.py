@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.core.monitoring.cursor import DuplicateNodeIdError, PlanCursor, find_duplicate_node_ids
+from src.core.monitoring.cursor import (
+    DuplicateNodeIdError,
+    PlanCursor,
+    find_dependency_cycles,
+    find_duplicate_node_ids,
+)
 from src.core.monitoring.events import NodeState
 
 
@@ -362,3 +367,51 @@ def test_update_pending_params_only_touches_pending_nodes():
     c.mark_dispatched("y")
     assert c.update_pending_params("y", {"target_name": "B"}) is False
     assert c.update_pending_params("ghost", {"k": "v"}) is False
+
+
+# ----------------------------------------------------------------------
+# C-05：依賴循環
+# ----------------------------------------------------------------------
+def _atom(nid):
+    return {"id": nid, "type": "atomic", "is_atomic": True, "task": f"T_{nid}", "sub_plans": []}
+
+
+def _seq(a, b):
+    return {"type": "Sequence", "from_id": a, "to_id": b}
+
+
+def test_cycle_releases_one_node_and_keeps_downstream_order():
+    """舊行為：循環中的節點與其下游全部當成孤兒，放在第一層一起執行。"""
+    sub_plans = [_atom("c"), _atom("a"), _atom("b")]
+    logic = [_seq("a", "b"), _seq("b", "a"), _seq("a", "c")]   # a ↔ b 循環；c 依賴 a
+    levels = PlanCursor.compute_execution_levels(sub_plans, logic)
+    assert [[n["id"] for n in level] for level in levels] == [["a"], ["b", "c"]]
+
+
+def test_acyclic_levels_unchanged():
+    levels = PlanCursor.compute_execution_levels([_atom("a"), _atom("b"), _atom("c")], [_seq("a", "b")])
+    assert [[n["id"] for n in level] for level in levels] == [["a", "c"], ["b"]]
+
+
+def test_duplicate_ids_run_last_in_legacy_levels():
+    first, second = _atom("x"), dict(_atom("x"), task="T_dup")
+    levels = PlanCursor.compute_execution_levels([first, second, _atom("y")], [])
+    assert levels == [[first, _atom("y")], [second]]
+
+
+def test_find_dependency_cycles_reports_composite_and_nodes():
+    plan = {"id": "root", "type": "composite", "execution_logic": [],
+            "sub_plans": [{"id": "g", "type": "composite", "sub_plans": [_atom("a"), _atom("b"), _atom("c")],
+                           "execution_logic": [_seq("a", "b"), _seq("b", "a"), _seq("a", "c")]}]}
+    assert find_dependency_cycles(plan) == [{"composite_id": "g", "node_ids": ["a", "b"]}]
+    assert find_dependency_cycles(_nested_plan()) == []
+
+
+def test_cursor_dispatches_cyclic_nodes_one_at_a_time():
+    plan = {"id": "root", "type": "composite", "sub_plans": [_atom("a"), _atom("b")],
+            "execution_logic": [_seq("a", "b"), _seq("b", "a")]}
+    c = PlanCursor(plan)
+    assert [r.node_id for r in c.next_ready_atomics()] == ["a"]
+    tid = c.mark_dispatched("a")
+    c.accept_action_result(tid, {"task_id": tid, "ok": True})
+    assert [r.node_id for r in c.next_ready_atomics()] == ["b"]

@@ -78,9 +78,9 @@
 |---|---|---|---|---|---|
 | **V-06** | 實驗驗證 | 執行端 Agent 都是模擬的：回傳 `"simulated": True` 和固定訊息 | [_executor_utils.py:158](../src/agents/_executor_utils.py#L158) | 「任務成功」不代表任務真的完成 | 未處理 |
 | **L-04** | 閉環／監測 | 動態調適發生在 NavigationAgent 內部（自己查兩次黑板），意圖層並不知道 | [navigation_agent.py:98](../src/agents/navigation_agent.py#L98) | 調適能力歸屬在執行端，不在 IPM，和架構敘述不一致 | 未處理 |
-| **C-05** | 正確性 | 有依賴循環時，相關節點會被當成孤兒放到第一層先執行，而且沒有警告 | [cursor.py:191](../src/core/monitoring/cursor.py#L191) | 違反執行順序 | 未處理 |
-| **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 未處理 |
-| **C-07** | 正確性 | 參數用正規表示式從 LLM 字串解析，不依 `params_schema` 驗證型別、enum 或必填 | [planner.py:23](../src/core/intent/planner.py#L23) | 例如 `Interests=null` 會被當成字串 "null" 傳下去 | 未處理 |
+| **C-05** | 正確性 | 有依賴循環時，相關節點會被當成孤兒放到第一層先執行，而且沒有警告 | [cursor.py:191](../src/core/monitoring/cursor.py#L191) | 違反執行順序 | 已修正 |
+| **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 已修正 |
+| **C-07** | 正確性 | 參數用正規表示式從 LLM 字串解析，不依 `params_schema` 驗證型別、enum 或必填 | [planner.py:23](../src/core/intent/planner.py#L23) | 例如 `Interests=null` 會被當成字串 "null" 傳下去 | 已修正 |
 | **C-08** | 正確性 | 判斷環境事件影響哪些節點時用子字串比對 | [trigger.py:219](../src/core/monitoring/trigger.py#L219) | "A1" 會誤中 "A12"，觸發不必要的重規劃 | 已修正（934c9c9） |
 | **A-03** | 架構落差 | 步驟之間不能傳遞資料，也沒有把結果彙整回覆給使用者的步驟 | [planner.py:161](../src/core/intent/planner.py#L161) | 多步驟任務無法串接，例如「推薦展品」的結果傳不到「規劃路線」 | 未處理 |
 | **A-04** | 架構落差 | 同一個意圖被 LLM 拆兩次：`parse_intent` 的結果只用來比對動作，planner 又重新拆一次 | [intentional_agent.py:226](../src/core/intentional_agent.py#L226)、[intentional_agent.py:250](../src/core/intentional_agent.py#L250) | 兩次結果可能不一致，成本也加倍 | 未處理 |
@@ -178,6 +178,21 @@
 比對變準後（別名、從屬），環境事件觸發的重規劃會變多，C-10 若不修會讓更多步驟被無聲丟棄，因此一併處理。
 
 新增測試 26 個（比對規則 15、trigger 5、決策套用順序與設定 3、導航端到端 3），並以突變測試確認關鍵測試在還原修正後會失敗。全部非 integration 測試共 753 個通過、10 個略過。
+
+
+### 2026-10-10：C-05 ～ C-07
+
+| 編號 | 修正內容 | 主要檔案 |
+|---|---|---|
+| C-05 | 遇到依賴循環時，一次只放行循環中在 sub_plans 裡最早出現的一個節點，其他依賴（包括依賴循環的下游節點）照常遵守；原本整個循環連同下游一起被當成孤兒放到第一層。新增 `find_dependency_cycles`，`plan_intention` 拒絕有循環的計畫（`debug.dependency_cycles`），直接傳入執行時記 warning | `cursor.py`、`intentional_agent.py` |
+| C-06 | 比對器只做一次向量查詢、在本機依門檻過濾：分數 ≥ `min_score`（預設 0.75）為候選，沒有時退而接受 ≥ `fallback_min_score`（預設 0.6，約 cos 0.2），仍沒有就回傳空串列（子意圖沒有語意相關的 action → 計畫無法完成），不再把門檻降為 0。兩個門檻可由 `[intent.matching]` 設定。參數 gate 全部淘汰時仍回傳不經 gate 的結果（LLM 抽出的 slot 常不完整），但在 evidence 標記 `param_gate_bypassed`，且不再重新呼叫 embedding 與查詢。新增 `python -m src.tools.calibrate_action_matcher` 校準門檻 | `action_matcher.py`、`intentional_agent.py`、`src/tools/calibrate_action_matcher.py`（新） |
+| C-07 | 新增 `action_params.py`：只在最外層逗號切分（引號、括號內不切），值轉成 Python 型別（`null` → 不傳、`true/false`、整數 / 小數、清單；有前導零的編號保留字串）；依 `params_schema` 對應參數名稱（不分大小寫與底線，修正 `BoothID` 被轉成 `booth_i_d`）、轉型別、以 `DomainProfile.enum_alias` 檢查 enum、檢查必填，問題記在節點的 `param_issues`。`[intent] param_validation` 預設 `warn`（記錄在 `debug.param_issues` 並照常執行），設為 `strict` 時有缺必填／型別錯／enum 錯就拒絕計畫 | `action_params.py`（新）、`planner.py`、`intentional_agent.py` |
+
+新增測試 27 個（參數解析 11、比對門檻 6、依賴循環 5、規劃驗證與設定 5），並以突變測試確認關鍵測試在還原修正後會失敗。全部非 integration 測試共 780 個通過、10 個略過。
+
+**注意**：
+- C-06 的 `fallback_min_score = 0.6` 未經實測校準：gias.toml 的 OpenAI 金鑰目前無效（401 invalid_api_key），無法計算 embedding。金鑰更新後請執行校準工具確認；若場內意圖被誤拒，可調低此值。
+- C-07 預設 `warn` 而非 `strict`：展場的旗艦範例「推薦幾個適合我的展區」沒有提供 `RecommendExhibits` 必填的 `interests`，`strict` 會讓它無法規劃。
 
 ---
 

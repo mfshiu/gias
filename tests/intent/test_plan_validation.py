@@ -127,3 +127,59 @@ def test_scope_gate_failure_follows_strict_setting(strict, rejected):
         assert "Scope gate failed" in out["reason"]
     else:
         assert out is None
+
+
+# ----------------------------------------------------------------------
+# C-05：有依賴循環的計畫要拒絕
+# ----------------------------------------------------------------------
+def test_plan_intention_rejects_cyclic_dependencies():
+    planned = _root([_atomic("1"), _atomic("2")])
+    planned["execution_logic"] = [{"type": "Sequence", "from_id": "1", "to_id": "2"},
+                                  {"type": "Sequence", "from_id": "2", "to_id": "1"}]
+    plan = _plan_intention_with(_make_agent(), planned)
+    assert plan["type"] == "leaf_unresolved"
+    assert plan["debug"]["dependency_cycles"] == [{"composite_id": "root", "node_ids": ["1", "2"]}]
+
+
+# ----------------------------------------------------------------------
+# C-07：參數問題（warn 記錄後照常執行；strict 拒絕）
+# ----------------------------------------------------------------------
+def _with_param_issue():
+    node = _atomic("1")
+    node["param_issues"] = [{"param": "interests", "issue": "missing_required"},
+                            {"param": "color", "issue": "unknown_param", "value": "red"}]
+    return _root([node])
+
+
+def test_param_issues_are_recorded_in_warn_mode():
+    plan = _plan_intention_with(_make_agent(), _with_param_issue())
+    assert plan["type"] == "composite"
+    assert [i["issue"] for i in plan["debug"]["param_issues"]] == ["missing_required", "unknown_param"]
+    assert plan["debug"]["param_issues"][0]["task"] == "TaskA"
+
+
+def test_param_issues_reject_plan_in_strict_mode():
+    agent = _make_agent()
+    agent.agent_config = {**agent.agent_config, "intent": {**(agent.agent_config.get("intent") or {}),
+                                                           "param_validation": "strict"}}
+    plan = _plan_intention_with(agent, _with_param_issue())
+    assert plan["type"] == "leaf_unresolved"
+    assert plan["reason"] == "Planner produced invalid action parameters."
+
+
+def test_strict_mode_ignores_unknown_params_only():
+    agent = _make_agent()
+    agent.agent_config = {**agent.agent_config, "intent": {"param_validation": "strict"}}
+    node = _atomic("1")
+    node["param_issues"] = [{"param": "color", "issue": "unknown_param", "value": "red"}]
+    assert _plan_intention_with(agent, _root([node]))["type"] == "composite"
+
+
+# ----------------------------------------------------------------------
+# C-06：比對門檻可由 intent.matching 設定
+# ----------------------------------------------------------------------
+def test_matching_thresholds_come_from_config():
+    agent = _make_agent({"matching": {"min_score": 0.8, "fallback_min_score": 0.65}})
+    assert (agent.matcher.min_score, agent.matcher.fallback_min_score) == (0.8, 0.65)
+    default = _make_agent()
+    assert (default.matcher.min_score, default.matcher.fallback_min_score) == (0.75, 0.6)

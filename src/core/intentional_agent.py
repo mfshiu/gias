@@ -64,6 +64,7 @@ from src.core.monitoring import (
     ReplanDecision,
     ReplanTrigger,
     TriggerKind,
+    find_dependency_cycles,
     find_duplicate_node_ids,
 )
 from src.core.monitoring.trigger import TriggerConfig
@@ -93,7 +94,15 @@ class IntentionalAgent(Agent):
 
         # composed modules
         self.embedder = LLMEmbedder(self.llm)
-        self.matcher = ActionMatcher(action_store=self.action_store, embedder=self.embedder, domain=self.domain, logger=logger)
+        matching = (agent_config.get("intent") or {}).get("matching") or {}
+        self.matcher = ActionMatcher(
+            action_store=self.action_store,
+            embedder=self.embedder,
+            domain=self.domain,
+            logger=logger,
+            min_score=float(matching.get("min_score", 0.75)),
+            fallback_min_score=float(matching.get("fallback_min_score", 0.6)),
+        )
         self.selector = ActionSelector(kg=self.kg, matcher=self.matcher, logger=logger)
         self.prompt_builder = PromptBuilder()
         self.decomposer = LLMDecomposer(llm=self.llm, prompt_builder=self.prompt_builder, logger=logger)
@@ -102,6 +111,7 @@ class IntentionalAgent(Agent):
             logger=logger,
             kg=self.kg,
             action_store=self.action_store,
+            enum_alias=self.domain.enum_alias,
         )
         self.scope_gate = ScopeGate(llm=self.llm, logger=logger)
 
@@ -306,9 +316,38 @@ class IntentionalAgent(Agent):
                 },
             )
 
+        cycles = find_dependency_cycles(plan)
+        if cycles:
+            return self._make_unresolved(
+                intent=norm, subs=subs,
+                reason="Planner produced cyclic Sequence dependencies.",
+                matched=[s.intent for s in subs],
+                extra_debug={
+                    "allowed_actions": sorted(allowed_action_names),
+                    "dependency_cycles": cycles,
+                },
+            )
+
+        param_issues = self._collect_param_issues(plan)
+        if param_issues:
+            blocking = [i for i in param_issues if i["issue"] in self._BLOCKING_PARAM_ISSUES]
+            if blocking and self._param_validation_mode() == "strict":
+                return self._make_unresolved(
+                    intent=norm, subs=subs,
+                    reason="Planner produced invalid action parameters.",
+                    matched=[s.intent for s in subs],
+                    extra_debug={
+                        "allowed_actions": sorted(allowed_action_names),
+                        "param_issues": param_issues,
+                    },
+                )
+            logger.warning("Plan has parameter issues (intent.param_validation=warn): %s", param_issues)
+
         plan.setdefault("debug", {})
         plan["debug"]["sub_intentions"] = [s.intent for s in subs]
         plan["debug"]["allowed_actions"] = sorted(allowed_action_names)
+        if param_issues:
+            plan["debug"]["param_issues"] = param_issues
         logger.debug(f"Generated plan: {json.dumps(plan, indent=2, ensure_ascii=False)}")
         return plan
 
@@ -425,6 +464,30 @@ class IntentionalAgent(Agent):
             if act_name and (act_name not in allowed_action_names):
                 illegal.append({"id": n.get("id"), "action": act, "action_name": act_name})
         return illegal
+
+    # strict 模式下會讓計畫被拒絕的參數問題（unknown_param 只記錄，不拒絕）
+    _BLOCKING_PARAM_ISSUES = frozenset({"missing_required", "invalid_type", "invalid_enum"})
+
+    def _param_validation_mode(self) -> str:
+        """intent.param_validation：warn（預設，記錄並照常執行）或 strict（有問題就拒絕計畫）。"""
+        mode = str((self.agent_config.get("intent") or {}).get("param_validation", "warn")).strip().lower()
+        return mode if mode in ("warn", "strict") else "warn"
+
+    @staticmethod
+    def _collect_param_issues(plan: dict[str, Any]) -> list[dict[str, Any]]:
+        """收集 planner 在 atomic 節點上記錄的 param_issues（附上節點 id 與 task）。"""
+        found: list[dict[str, Any]] = []
+
+        def walk(node: Any) -> None:
+            if not isinstance(node, dict):
+                return
+            for issue in node.get("param_issues") or []:
+                found.append({"id": node.get("id"), "task": node.get("task"), **issue})
+            for child in node.get("sub_plans") or []:
+                walk(child)
+
+        walk(plan)
+        return found
 
     @staticmethod
     def _find_unexecutable_nodes(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -623,6 +686,10 @@ class IntentionalAgent(Agent):
         except DuplicateNodeIdError as e:
             logger.warning("Plan rejected: %s", e)
             return {"ok": False, "message": "計畫節點 id 重複，無法執行。", "plan": plan, "error": str(e)}
+        cycles = find_dependency_cycles(plan)
+        if cycles:
+            # plan_intention 會拒絕這種計畫；直接傳入時 cursor 會逐一打破循環後執行
+            logger.warning("Plan has cyclic Sequence dependencies; executing with cycles broken: %s", cycles)
         budget = budget or self._build_budget()
         guard = BudgetGuard(budget)
         monitor = self._ensure_monitor()

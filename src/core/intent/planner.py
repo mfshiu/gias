@@ -1,5 +1,6 @@
-import re
 import time
+
+from .action_params import normalize_params, parse_action_call
 
 
 def _extract_action_name(action_text: str) -> str:
@@ -10,40 +11,6 @@ def _extract_action_name(action_text: str) -> str:
     if "(" in s:
         return s.split("(", 1)[0].strip()
     return s
-
-
-def _pascal_to_snake(name: str) -> str:
-    """TargetType -> target_type"""
-    if not name:
-        return ""
-    s = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
-    return s
-
-
-def _parse_action_params(action_text: str) -> dict:
-    """
-    從 action 字串解析參數 bindings。
-    例：LocateExhibit(TargetType="攤位", TargetName="A12") -> {"target_type": "攤位", "target_name": "A12"}
-    """
-    out: dict = {}
-    s = (action_text or "").strip()
-    if "(" not in s or ")" not in s:
-        return out
-    inner = s[s.index("(") + 1 : s.rindex(")")].strip()
-    if not inner:
-        return out
-    # 簡易解析：Key="Value" 或 Key='Value' 或 Key=Value，以逗號分隔（需處理引號內逗號）
-    pattern = r'(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^,]+)'
-    for m in re.finditer(pattern, inner):
-        key_pascal = m.group(1).strip()
-        val = m.group(2).strip()
-        if val.startswith('"') and val.endswith('"'):
-            val = val[1:-1].replace('\\"', '"')
-        elif val.startswith("'") and val.endswith("'"):
-            val = val[1:-1].replace("\\'", "'")
-        key = _pascal_to_snake(key_pascal)
-        out[key] = val
-    return out
 
 
 def _child_node_id(parent_id: str, local_id: str) -> str:
@@ -76,11 +43,13 @@ def _remap_relationships(relationships: list, id_map: dict[str, str]) -> list[di
 
 
 class RecursivePlanner:
-    def __init__(self, *, decomposer, logger, kg=None, action_store=None):
+    def __init__(self, *, decomposer, logger, kg=None, action_store=None, enum_alias=None):
         self.decomposer = decomposer
         self.logger = logger
         self.kg = kg
         self.action_store = action_store
+        # param_key -> {顯示值: enum 值}（DomainProfile.enum_alias），驗證 enum 參數時使用
+        self.enum_alias = enum_alias or {}
 
     def _get_action_metadata(self, action_name: str) -> dict | None:
         """
@@ -200,7 +169,7 @@ class RecursivePlanner:
                 action_name = _extract_action_name(action)
                 agent_info = self._get_agent_by_action(action_name) if action_name else None
                 action_meta = self._get_action_metadata(action_name) if action_name else None
-                params_bindings = _parse_action_params(action) if action else {}
+                raw_params = parse_action_call(action) if action else {}
 
                 atomic_node = {
                     "id": sub_id,
@@ -220,7 +189,11 @@ class RecursivePlanner:
                     atomic_node["task"] = action_meta.get("task")
                     atomic_node["action_id"] = action_meta.get("action_id")
                     atomic_node["params_schema"] = action_meta.get("params_schema", [])
-                    atomic_node["params"] = params_bindings
+                    # 依 schema 對應名稱、轉型別、檢查 enum 與必填；問題記在 param_issues
+                    params, issues = normalize_params(raw_params, atomic_node["params_schema"], self.enum_alias)
+                    atomic_node["params"] = params
+                    if issues:
+                        atomic_node["param_issues"] = issues
 
                 current_node["sub_plans"].append(atomic_node)
             else:

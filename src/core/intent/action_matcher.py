@@ -14,20 +14,37 @@ class ActionMatcher:
     ActionMatcher = 向量檢索(action desc) + alias 加權 + (可選) 參數可填性/相似度重排
 
     ✅ 可落地重點：
+    - 向量門檻（Neo4j cosine 分數 = (1 + cos) / 2，0.5 表示語意無關）：
+      1) 分數 >= min_score 的 action 為候選
+      2) 都沒有時，退而接受分數 >= fallback_min_score 的 action
+      3) 仍沒有就回傳空串列：這個子意圖沒有語意相關的 action（意圖超出能力範圍）
     - 若呼叫端提供 slots（SubIntent.slots），就會：
       1) 從 KG 取 action 的 params schema（Action->Param）
       2) 做 required 可填性 gate（填不出就淘汰）
       3) 計算 param_score
       4) 依 final_score 重新排序
-      5) 若 param_score / final_score 低於門檻，可直接淘汰（更能拒絕做不到的意圖）
-    - 若 slots 未提供：維持舊行為（只做向量+alias）
+      5) 若 param_score / final_score 低於門檻，可直接淘汰
+      6) 若候選全被 gate 淘汰（常見原因是 LLM 抽出的 slot 不完整），改回傳不經 gate 的結果，
+         並在 evidence 標記 param_gate_bypassed；語意門檻已在上面把關
+    - 若 slots 未提供：只做向量+alias
     """
 
-    def __init__(self, *, action_store: ActionStore, embedder: LLMEmbedder, domain: DomainProfile, logger):
+    def __init__(
+        self,
+        *,
+        action_store: ActionStore,
+        embedder: LLMEmbedder,
+        domain: DomainProfile,
+        logger,
+        min_score: float = 0.75,
+        fallback_min_score: float = 0.6,
+    ):
         self.action_store = action_store
         self.embedder = embedder
         self.domain = domain
         self.logger = logger
+        self.min_score = float(min_score)
+        self.fallback_min_score = float(fallback_min_score)
 
     # -------------------------
     # Alias scoring (existing)
@@ -208,8 +225,9 @@ class ActionMatcher:
         *,
         slots: Mapping[str, Any] | None = None,
         top_k: int = 10,
-        min_score: float = 0.75,
+        min_score: float | None = None,
         allow_fallback: bool = True,
+        fallback_min_score: float | None = None,
         alias_weight: float = 0.15,
         w_base: float = 0.4,
         w_param: float = 0.6,
@@ -217,6 +235,8 @@ class ActionMatcher:
         min_final_score: float = 0.55,
         enable_param_gate: bool = True,
     ) -> list[ActionMatch]:
+        min_score = self.min_score if min_score is None else float(min_score)
+        floor = self.fallback_min_score if fallback_min_score is None else float(fallback_min_score)
         norm_intent = self.domain.normalize(intention)
         self.logger.debug(f"Matching actions for sub-intention: {norm_intent}")
 
@@ -227,29 +247,60 @@ class ActionMatcher:
             for k, v in raw_slots.items()
             if k is not None and not str(k).startswith("_")
         }
-        use_slots = bool(effective_slots)
 
         q_vec = self.embedder.embed_text(norm_intent)
-        dim = len(q_vec)
+        self.action_store.ensure_action_desc_index(dimensions=len(q_vec))
 
-        self.action_store.ensure_action_desc_index(dimensions=dim)
-
-        rows = self.action_store.search_actions_by_vector(
-            vector=q_vec,
-            top_k=top_k,
-            min_score=min_score,
-        )
-
-        if (not rows) and allow_fallback:
-            rows = self.action_store.search_actions_by_vector(
-                vector=q_vec,
-                top_k=top_k,
-                min_score=0.0,
+        # 只查一次（不設門檻），在本機依 min_score / fallback 門檻過濾
+        rows = self.action_store.search_actions_by_vector(vector=q_vec, top_k=top_k, min_score=0.0) or []
+        scores = [float(r.get("score", 0.0)) for r in rows]
+        candidates = [r for r, s in zip(rows, scores) if s >= min_score]
+        if not candidates and allow_fallback:
+            candidates = [r for r, s in zip(rows, scores) if s >= floor]
+        if not candidates:
+            self.logger.info(
+                "No action matches %r: best vector score %.3f < fallback %.2f",
+                norm_intent, max(scores, default=0.0), floor if allow_fallback else min_score,
             )
+            return []
 
+        kwargs = dict(
+            intention=intention,
+            norm_intent=norm_intent,
+            effective_slots=effective_slots,
+            alias_weight=alias_weight,
+            w_base=w_base,
+            w_param=w_param,
+            min_param_score=min_param_score,
+            min_final_score=min_final_score,
+        )
+        matches = self._score_candidates(candidates, enable_param_gate=enable_param_gate, **kwargs)
+        if not matches and effective_slots and enable_param_gate:
+            self.logger.debug("All vector matches rejected by param gate; returning ungated matches")
+            matches = self._score_candidates(candidates, enable_param_gate=False, gate_bypassed=True, **kwargs)
+
+        self.logger.debug(f"Matched actions: {len(matches)}")
+        return matches
+
+    def _score_candidates(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        intention: str,
+        norm_intent: str,
+        effective_slots: dict[str, Any],
+        alias_weight: float,
+        w_base: float,
+        w_param: float,
+        min_param_score: float,
+        min_final_score: float,
+        enable_param_gate: bool,
+        gate_bypassed: bool = False,
+    ) -> list[ActionMatch]:
+        use_slots = bool(effective_slots)
         matches: list[ActionMatch] = []
 
-        for r in rows or []:
+        for r in rows:
             action_name = r.get("name") or "UnnamedAction"
             vec_score = float(r.get("score", 0.0))
             a_score = self._alias_score(action_name, norm_intent)
@@ -332,29 +383,11 @@ class ActionMatcher:
                         "weights": {"w_base": w_base, "w_param": w_param},
                         "thresholds": {"min_param_score": min_param_score, "min_final_score": min_final_score},
                         "param_gate_enabled": bool(should_gate),
+                        "param_gate_bypassed": gate_bypassed,
                         "params_schema_available": bool(params_schema),
                     },
                 )
             )
 
         matches.sort(key=lambda m: m.final_score, reverse=True)
-
-        # ✅ Fallback: vector 有結果但全被 param gate 拒絕時，重試不 gate（避免 slot 對應不全導致全滅）
-        if (not matches) and rows and use_slots and enable_param_gate:
-            self.logger.debug("All vector matches rejected by param gate; retrying without gate")
-            return self.match_actions(
-                intention,
-                slots=slots,
-                top_k=top_k,
-                min_score=min_score,
-                allow_fallback=allow_fallback,
-                alias_weight=alias_weight,
-                w_base=w_base,
-                w_param=w_param,
-                min_param_score=min_param_score,
-                min_final_score=min_final_score,
-                enable_param_gate=False,
-            )
-
-        self.logger.debug(f"Matched actions: {len(matches)}")
         return matches
