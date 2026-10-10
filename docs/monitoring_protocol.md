@@ -85,6 +85,7 @@
 | `ok` | 是 | 是否成功 |
 | `cancelled` | 是 | 是否因 cancel 而結束（即使 `ok=true`） |
 | `task`, `message`, `result`, `error` | 否 | 業務內容 |
+| `result.adaptations` | 否 | 執行中自行做的調整清單（格式同 §5 的 `adaptation`） |
 | `started_at`, `finished_at`, `elapsed_sec` | 否 | 計時 |
 
 ---
@@ -117,7 +118,32 @@ Executor 行為：
 }
 ```
 
-`state ∈ {started, running, finishing, done, cancelled, failed}`；progress 是 advisory，IA 不應依賴其抵達。
+`state ∈ {started, running, finishing, done, cancelled, failed, adapted}`；progress 是 advisory，IA 不應依賴其抵達。
+
+### 5.1 執行端的自行調整（`state = "adapted"`）
+
+執行端在任務中自行改變做法時（例如因環境變動改走其他路線、或必須放寬限制才走得下去），
+應即時送出 `adapted` 事件，並把同樣的內容附在最終結果的 `result.adaptations`：
+
+```json
+{
+  "task_id": "uuid-or-node-task-id",
+  "state": "adapted",
+  "adaptation": {
+    "kind": "reroute",
+    "reason": "environment changed along the planned route",
+    "detail": {"at": "P_Info", "previous_route": ["P_Info", "P_South_Hub", "B_GM1"],
+               "new_route": ["P_Info", "B_SU1", "P_South_Hub", "B_GM1"]}
+  }
+}
+```
+
+| `kind` | 意義 | IA 的處理 |
+|--------|------|-----------|
+| `reroute` | 依環境變動改走其他路線，目標不變 | 記到節點上（執行摘要的 `adaptations`） |
+| `constraint_relaxed` | 沒有路線能滿足限制（如 `avoid_crowded`），只好放寬 | 記到節點上；啟用 `enable_llm_assist` 時交給 LLM 判斷是否重規劃，否則接受 |
+
+IA 訂閱 `info.progress` / `navigation.progress`；只採用屬於節點目前派工（`task_id` 相符）的事件。
 
 ---
 

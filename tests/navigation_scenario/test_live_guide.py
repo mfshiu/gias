@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.agents._executor_utils import CancelToken
+from src.agents._executor_utils import AdaptationLog, CancelToken
 from navigation_scenario.live.guide_agent import (
     GuideAgent,
     RouteUnavailable,
@@ -191,3 +191,61 @@ def test_non_navigation_task_uses_navigation_agent_behaviour():
         message, cancelled = guide.execute_task("ExplainDirections", {"destination": "VR_Area"})
     assert cancelled is False
     assert guide.snapshot_state()[2] == []
+
+
+# ----------------------------------------------------------------------
+# L-04：繞行與放寬限制要回報意圖層
+# ----------------------------------------------------------------------
+def test_reroute_is_reported_with_routes():
+    snap = snapshot_from_config()
+    guide = _guide(snap)
+
+    def block(step):
+        if step.to_node == "P_Info":
+            snap.edges[("P_Info", "P_South_Hub")]["blocked"] = True
+
+    guide.step_listener = block
+    log = AdaptationLog(None)
+    guide.execute_task("LocateExhibit", {"target_name": "B_GM1"}, adaptations=log)
+    assert [a["kind"] for a in log.items] == ["reroute"]
+    detail = log.items[0]["detail"]
+    assert detail["at"] == "P_Info"
+    assert detail["previous_route"] == ["P_Info", "P_South_Hub", "B_GM1"]
+    assert detail["new_route"] == ["P_Info", "B_SU1", "P_South_Hub", "B_GM1"]
+
+
+def test_constraint_relaxation_is_reported_once():
+    """每一步都必須放寬限制（所有區域都擁擠）時只回報一次，不會每走一步就回報。"""
+    snap = snapshot_from_config()
+    for zone in snap.zone_states:
+        snap.zone_states[zone] = "Crowded"
+    guide = _guide(snap)
+    log = AdaptationLog(None)
+    guide.execute_task("SuggestRoute", {"destination": "B_GM1", "avoid_crowded": True}, adaptations=log)
+    assert len(guide.snapshot_state()[2]) == 3
+    assert [a["kind"] for a in log.items] == ["constraint_relaxed"]
+    assert log.items[0]["detail"]["constraint"] == "avoid_crowded"
+
+
+def test_route_change_after_leaving_crowded_bottleneck_is_reported():
+    """入口區擁擠時先放寬限制；離開後又找得到避開人潮的路，改走那條路也要回報。"""
+    snap = snapshot_from_config()
+    snap.zone_states["Main_Hall"] = "Crowded"
+    snap.zone_states["Biotech_Area"] = "Crowded"
+    guide = _guide(snap)
+    log = AdaptationLog(None)
+    guide.execute_task("SuggestRoute", {"destination": "B_GM1", "avoid_crowded": True}, adaptations=log)
+    assert [a["kind"] for a in log.items] == ["constraint_relaxed", "reroute"]
+    assert guide.position == "B_GM1"
+
+
+def test_adaptations_reach_progress_topic_and_result():
+    snap = snapshot_from_config()
+    guide = _guide(snap)
+    guide.step_listener = lambda step: snap.edges[("P_Info", "P_South_Hub")].update(blocked=True)
+    with patch.object(guide, "publish") as pub:
+        result = guide._handle("navigation.request", _Parcel({
+            "task": "LocateExhibit", "task_id": "T-adapt", "params": {"target_name": "B_GM1"}}))
+    assert result["result"]["adaptations"][0]["kind"] == "reroute"
+    progress = [c[0][1] for c in pub.call_args_list if c[0][0] == "navigation.progress"]
+    assert progress and progress[0]["state"] == "adapted" and progress[0]["task_id"] == "T-adapt"

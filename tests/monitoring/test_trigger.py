@@ -332,3 +332,40 @@ def test_relationship_name_in_topic_is_not_an_entity():
                        metadata={"source_id": "VR_Area", "rel_type": "CURRENT_STATE", "target_id": "Closed"})
     t = ReplanTrigger(config=TriggerConfig(relevant_topic_prefixes=("Zone/",)), budget_guard=BudgetGuard())
     assert t.decide(action_results=[], env_changes=[change], cursor=c).kind == TriggerKind.NONE
+
+
+# ----------------------------------------------------------------------
+# L-04：執行端放寬限制時交給 LLM 判斷
+# ----------------------------------------------------------------------
+def _relaxed(task_id):
+    from src.core.monitoring.events import ExecutorAdaptation
+    return ExecutorAdaptation(task_id=task_id, node_id="a", kind="constraint_relaxed",
+                              reason="no route satisfies avoid_crowded", detail={"constraint": "avoid_crowded"})
+
+
+def test_constraint_relaxation_is_escalated_to_llm():
+    c = PlanCursor(_two_atomic_plan())
+    tid = c.mark_dispatched("a")
+    replan = ReplanDecision(kind=TriggerKind.REPLAN_SUBTREE, affected_node_ids=("a",), subtree_root_id="L2-1")
+    decider = _RecordingDecider(replan)
+    decision = _llm_trigger(decider).decide(action_results=[], env_changes=[], cursor=c, adaptations=[_relaxed(tid)])
+    assert decision.kind == TriggerKind.REPLAN_SUBTREE
+    assert decider.calls[0]["adaptations"][0].kind == "constraint_relaxed"
+
+
+def test_constraint_relaxation_is_accepted_without_llm():
+    c = PlanCursor(_two_atomic_plan())
+    tid = c.mark_dispatched("a")
+    t = ReplanTrigger(budget_guard=BudgetGuard())
+    assert t.decide(action_results=[], env_changes=[], cursor=c, adaptations=[_relaxed(tid)]).kind == TriggerKind.NONE
+
+
+def test_reroute_alone_does_not_consult_llm():
+    from src.core.monitoring.events import ExecutorAdaptation
+    c = PlanCursor(_two_atomic_plan())
+    tid = c.mark_dispatched("a")
+    decider = _RecordingDecider(ReplanDecision.abort("x"))
+    reroute = ExecutorAdaptation(task_id=tid, node_id="a", kind="reroute")
+    assert _llm_trigger(decider).decide(action_results=[], env_changes=[], cursor=c,
+                                        adaptations=[reroute]).kind == TriggerKind.NONE
+    assert decider.calls == []

@@ -415,3 +415,17 @@ def test_cursor_dispatches_cyclic_nodes_one_at_a_time():
     tid = c.mark_dispatched("a")
     c.accept_action_result(tid, {"task_id": tid, "ok": True})
     assert [r.node_id for r in c.next_ready_atomics()] == ["b"]
+
+
+
+def test_record_adaptation_only_for_current_dispatch():
+    c = PlanCursor(_parallel_two_atomics())
+    old = c.mark_dispatched("x")
+    c.accept_action_result(old, {"task_id": old, "ok": False})
+    c.reset_for_retry("x")
+    new = c.mark_dispatched("x")
+    assert c.record_adaptation(old, {"kind": "reroute"}) is None
+    assert c.record_adaptation(new, {"kind": "reroute"}) is not None
+    c.accept_action_result(new, {"task_id": new, "ok": True})
+    x = next(r for r in c.summary()["results"] if r["id"] == "x")
+    assert x["adaptations"] == [{"kind": "reroute"}]

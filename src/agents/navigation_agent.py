@@ -25,6 +25,8 @@ from agentflow.core.agent import Agent
 from src.app_helper import get_agent_config
 from src.log_helper import init_logging
 from src.agents._executor_utils import (
+    ADAPT_REROUTE,
+    AdaptationLog,
     CancelToken,
     TOPIC_NAVIGATION_CANCEL,
     TOPIC_NAVIGATION_PROGRESS,
@@ -105,8 +107,12 @@ def _execute_with_replan(
     en_route_sec: float = 5.0,
     step_delay: float = 0.8,
     cancel_token: CancelToken | None = None,
+    adaptations: AdaptationLog | None = None,
 ) -> tuple[str, bool]:
-    """導航執行：過程中多次查詢黑板；可被 cancel_token 中斷。"""
+    """導航執行：過程中多次查詢黑板；可被 cancel_token 中斷。
+
+    人潮在途中改變而改走其他路線時，經 adaptations 回報意圖層。
+    """
     loc = params.get("current_location", "?")
     target = params.get("target_name") or params.get("destination", "?")
     dest_label = params.get("destination") or target
@@ -159,6 +165,7 @@ def _execute_with_replan(
     msg = f"已規劃從 {loc} 前往 {dest_label} 的路線，請跟我來。"
     if crowded_1 != crowded_2:
         print("  [NavigationAgent] >>> 【路線變更】人潮已有變化！", flush=True)
+        _report_crowd_reroute(adaptations, crowded_1, crowded_2)
         if crowded_1 and not crowded_2:
             msg += f" 【路線變更】原擁擠區 {', '.join(crowded_1)} 現已緩解，已改採最短路徑。"
         elif not crowded_1 and crowded_2:
@@ -175,12 +182,19 @@ def _execute_with_replan(
     return (msg, False)
 
 
+def _report_crowd_reroute(adaptations: AdaptationLog | None, before: list[str], after: list[str]) -> None:
+    if adaptations is not None:
+        adaptations.report(ADAPT_REROUTE, "crowd changed during navigation",
+                           crowded_before=before, crowded_after=after)
+
+
 def _execute(
     agent: "NavigationAgent",
     task: str,
     params: dict[str, Any],
     *,
     cancel_token: CancelToken | None = None,
+    adaptations: AdaptationLog | None = None,
 ) -> tuple[str, bool]:
     """執行導航類 task；回傳 (message, cancelled)。
 
@@ -221,6 +235,7 @@ def _execute(
         msg = f"已根據您的位置 {loc} 規劃建議參觀路線。"
         if crowded_1 != crowded_2:
             print("  [NavigationAgent] >>> 【路線變更】人潮已有變化！", flush=True)
+            _report_crowd_reroute(adaptations, crowded_1, crowded_2)
             if crowded_1 and not crowded_2:
                 msg += f" 【路線變更】原擁擠區 {', '.join(crowded_1)} 現已緩解，已改採最短路徑。"
             elif not crowded_1 and crowded_2:
@@ -237,6 +252,7 @@ def _execute(
             en_route_sec=5.0,
             step_delay=0.8,
             cancel_token=cancel_token,
+            adaptations=adaptations,
         )
 
     if task == "ExplainDirections":
@@ -270,6 +286,7 @@ def _execute(
             en_route_sec=5.0,
             step_delay=0.8,
             cancel_token=cancel_token,
+            adaptations=adaptations,
         )
 
     ok = _simulate_progress(["處理中...", "完成"], cancel_token=cancel_token)
@@ -348,8 +365,11 @@ class NavigationAgent(Agent):
         started_at = _now_iso()
         t0 = time.time()
         cancelled = False
+        adaptations = AdaptationLog(task_id, publish=self._publish_progress_payload)
         try:
-            message, cancelled = self.execute_task(task, params, cancel_token=token, task_id=task_id)
+            message, cancelled = self.execute_task(
+                task, params, cancel_token=token, task_id=task_id, adaptations=adaptations,
+            )
         except Exception as e:
             logger.exception("NavigationAgent execute failed: %s", e)
             message, cancelled = (f"執行失敗：{e}", False)
@@ -387,6 +407,7 @@ class NavigationAgent(Agent):
             started_at=started_at,
             finished_at=finished_at,
             elapsed_sec=elapsed,
+            result={"adaptations": adaptations.items} if adaptations.items else None,
         )
 
         if idempotency_key and ok:
@@ -403,12 +424,14 @@ class NavigationAgent(Agent):
         *,
         cancel_token: CancelToken | None = None,
         task_id: str | None = None,
+        adaptations: AdaptationLog | None = None,
     ) -> tuple[str, bool]:
         """執行單一 task，回傳 (message, cancelled)；失敗時拋出例外。
 
+        執行中自行做的調整（改路線、放寬限制）以 adaptations.report() 回報意圖層。
         子類別可覆寫以提供實際的導航行為（例：navigation_scenario.live.GuideAgent）。
         """
-        return _execute(self, task, params, cancel_token=cancel_token)
+        return _execute(self, task, params, cancel_token=cancel_token, adaptations=adaptations)
 
     def _handle_cancel(self, topic: str, pcl: Any) -> dict[str, Any]:
         data = parse_cancel_payload(pcl)
@@ -437,7 +460,9 @@ class NavigationAgent(Agent):
     def _publish_progress(
         self, task_id: str, *, state: str, ratio: float | None = None, note: str = ""
     ) -> None:
-        payload = build_progress_payload(task_id, state=state, ratio=ratio, note=note)
+        self._publish_progress_payload(build_progress_payload(task_id, state=state, ratio=ratio, note=note))
+
+    def _publish_progress_payload(self, payload: dict[str, Any]) -> None:
         try:
             self.publish(TOPIC_NAVIGATION_PROGRESS, payload)
         except Exception as e:

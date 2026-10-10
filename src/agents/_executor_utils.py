@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 # ----------------------------------------------------------------------
 # Topic 常數
@@ -190,13 +190,44 @@ def build_progress_payload(
     state: str = "running",
     ratio: float | None = None,
     note: str = "",
+    adaptation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"task_id": str(task_id), "state": str(state)}
     if ratio is not None:
         payload["ratio"] = float(ratio)
     if note:
         payload["note"] = str(note)
+    if adaptation is not None:
+        payload["adaptation"] = dict(adaptation)
     return payload
+
+
+# 執行端在任務中自行做的調整
+ADAPT_REROUTE = "reroute"                        # 依環境變動改走其他路線
+ADAPT_CONSTRAINT_RELAXED = "constraint_relaxed"  # 必須放寬限制（如 avoid_crowded）才走得下去
+PROGRESS_STATE_ADAPTED = "adapted"
+
+
+class AdaptationLog:
+    """執行端在任務中自行做的調整（例如改路線、放寬限制）。
+
+    每筆調整即時以 *.progress（state="adapted"）回報意圖層，任務結束時附在 result.adaptations。
+    沒有 task_id 的舊同步呼叫不回報 progress，只附在結果裡。
+    """
+
+    def __init__(self, task_id: str | None, publish: Callable[[dict[str, Any]], None] | None = None):
+        self.task_id = task_id
+        self._publish = publish
+        self.items: list[dict[str, Any]] = []
+
+    def report(self, kind: str, reason: str = "", **detail: Any) -> None:
+        item = {"kind": kind, "reason": reason, "detail": detail}
+        self.items.append(item)
+        if self.task_id and self._publish is not None:
+            try:
+                self._publish(build_progress_payload(self.task_id, state=PROGRESS_STATE_ADAPTED, adaptation=item))
+            except Exception:
+                pass
 
 
 def new_task_id(prefix: str = "task") -> str:

@@ -17,7 +17,7 @@ import logging
 from typing import Any
 
 from .cursor import PlanCursor
-from .events import ActionResult, EnvChange, NodeState, ReplanDecision, TriggerKind
+from .events import ActionResult, EnvChange, ExecutorAdaptation, NodeState, ReplanDecision, TriggerKind
 
 
 _KINDS = {
@@ -49,6 +49,8 @@ Rules:
 - Only refer to step ids that appear in plan_steps.
 - Completed steps (state "done") cannot be changed.
 - Environment changes can only affect steps whose state is "pending" or "in_flight".
+- executor_adaptations are changes an executor already made on its own (e.g. a different route, or
+  relaxing avoid_crowded because no route satisfied it); decide whether the result still serves the intent.
 - new_params keys must be existing parameter names of that step.
 
 Return ONLY a JSON object:
@@ -82,9 +84,11 @@ class LLMReplanAdvisor:
         env_changes: list[EnvChange],
         action_results: list[ActionResult],
         cursor: PlanCursor,
+        adaptations: list[ExecutorAdaptation] | None = None,
     ) -> ReplanDecision:
         messages = self.build_messages(
-            intent=intent, env_changes=env_changes, action_results=action_results, cursor=cursor
+            intent=intent, env_changes=env_changes, action_results=action_results, cursor=cursor,
+            adaptations=adaptations,
         )
         reply = self.llm.json(messages, schema=None)
         decision = self.to_decision(reply, cursor)
@@ -101,6 +105,7 @@ class LLMReplanAdvisor:
         env_changes: list[EnvChange],
         action_results: list[ActionResult],
         cursor: PlanCursor,
+        adaptations: list[ExecutorAdaptation] | None = None,
     ) -> list[dict[str, str]]:
         steps = [
             {
@@ -130,6 +135,11 @@ class LLMReplanAdvisor:
                 {"topic": c.topic, "action": c.action, "old_value": c.old_value,
                  "new_value": c.new_value, "metadata": c.metadata}
                 for c in env_changes[: self.max_env_changes]
+            ],
+            "executor_adaptations": [
+                {"step_id": (cursor.find_by_task_id(a.task_id).node_id
+                             if cursor.find_by_task_id(a.task_id) else a.node_id), **a.to_dict()}
+                for a in adaptations or []
             ],
         }
         return [

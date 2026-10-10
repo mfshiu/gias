@@ -21,6 +21,7 @@ from .events import (
     ReplanDecision,
     EnvChange,
     ActionResult,
+    ExecutorAdaptation,
 )
 from .cursor import DuplicateNodeIdError, NodeRecord, PlanCursor, find_dependency_cycles, find_duplicate_node_ids
 from .budget import Budget, BudgetGuard
@@ -36,6 +37,7 @@ __all__ = [
     "ReplanDecision",
     "EnvChange",
     "ActionResult",
+    "ExecutorAdaptation",
     "DuplicateNodeIdError",
     "NodeRecord",
     "PlanCursor",

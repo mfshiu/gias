@@ -76,3 +76,22 @@ def test_wait_for_signal_returns_true_on_event():
 def test_wait_for_signal_timeout():
     m = ExecutionMonitor()
     assert m.wait_for_signal(timeout=0.05) is False
+
+
+# ----------------------------------------------------------------------
+# L-04：progress 的 adapted 事件進入 queue
+# ----------------------------------------------------------------------
+def test_adapted_progress_is_queued_with_node_binding():
+    from src.core.monitoring.monitor import ExecutionMonitor
+
+    m = ExecutionMonitor()
+    m.bind_task("t1", "n1")
+    m.on_progress("navigation.progress", {"task_id": "t1", "state": "running", "ratio": 0.5})
+    assert m.drain_adaptations() == []
+    m.on_progress("navigation.progress", {
+        "task_id": "t1", "state": "adapted",
+        "adaptation": {"kind": "reroute", "reason": "blocked", "detail": {"at": "P_Info"}},
+    })
+    assert m.wait_for_signal(0.01) is True
+    [ad] = m.drain_adaptations()
+    assert (ad.task_id, ad.node_id, ad.kind, ad.detail) == ("t1", "n1", "reroute", {"at": "P_Info"})

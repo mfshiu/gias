@@ -11,6 +11,7 @@ import pytest
 
 from src.agents.navigation_agent import NavigationAgent
 from src.agents._executor_utils import (
+    TOPIC_NAVIGATION_PROGRESS,
     TOPIC_NAVIGATION_REQUEST,
     TOPIC_NAVIGATION_RESULT,
 )
@@ -127,3 +128,33 @@ def test_handle_missing_task_returns_failure(fast_nav_env, task):
     assert result["error"] == "missing task"
     pub_calls = _publish_calls_to(mock_pub, TOPIC_NAVIGATION_RESULT)
     assert pub_calls and pub_calls[0][0][1]["ok"] is False
+
+
+# ----------------------------------------------------------------------
+# L-04：執行端自行改路線要回報意圖層
+# ----------------------------------------------------------------------
+def test_crowd_change_during_navigation_is_reported(fast_nav_env):
+    agent = _nav_agent()
+    hotspots = [[], [{"zone": "AI_Tech_Area", "crowd_status": "Crowded"}]]
+    with patch("src.agents.navigation_agent.get_crowd_hotspots", side_effect=lambda _a: hotspots.pop(0)), \
+         patch.object(agent, "publish") as mock_pub:
+        result = agent._handle("navigation.request", _FakeParcel({
+            "task": "LocateExhibit", "params": {"target_name": "A12"}, "task_id": "NT-adapt",
+        }))
+    assert result["ok"] is True
+    adaptation = result["result"]["adaptations"][0]
+    assert adaptation["kind"] == "reroute"
+    assert adaptation["detail"] == {"crowded_before": [], "crowded_after": ["AI_Tech_Area"]}
+    progress = _publish_calls_to(mock_pub, TOPIC_NAVIGATION_PROGRESS)
+    assert progress and progress[0][0][1]["state"] == "adapted"
+    assert progress[0][0][1]["task_id"] == "NT-adapt"
+
+
+def test_no_adaptation_when_crowd_unchanged(fast_nav_env):
+    agent = _nav_agent()
+    with patch.object(agent, "publish") as mock_pub:
+        result = agent._handle("navigation.request", _FakeParcel({
+            "task": "LocateExhibit", "params": {"target_name": "A12"}, "task_id": "NT-same",
+        }))
+    assert "result" not in result
+    assert _publish_calls_to(mock_pub, TOPIC_NAVIGATION_PROGRESS) == []

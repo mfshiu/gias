@@ -170,6 +170,10 @@ def evaluate_live_case(
                 {k: v for k, v in entry.items() if k != "at"} for entry in summary.get("replan_log") or []
             ],
             "executor_reroutes_after_injection": reroutes_after,
+            # 執行端回報、且 IntentionalAgent 記到節點上的調整（意圖層知道執行偏離了原計畫）
+            "executor_adaptations_reported": [
+                {"step_id": r.get("id"), **a} for r in summary.get("results") or [] for a in r.get("adaptations") or []
+            ],
             "constraint_violations": violations,
             "walk_time_sec": round(actual * seconds_per_meter, 3),
         },

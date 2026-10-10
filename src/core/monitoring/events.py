@@ -108,6 +108,34 @@ class EnvChange:
 
 
 @dataclass(slots=True)
+class ExecutorAdaptation:
+    """執行端在任務中自行做的調整（*.progress 的 state="adapted"），例如改路線、放寬限制。"""
+
+    task_id: str
+    node_id: str = ""
+    kind: str = ""                          # reroute / constraint_relaxed / ...
+    reason: str = ""
+    detail: dict[str, Any] = field(default_factory=dict)
+    received_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any], *, node_id: str = "") -> "ExecutorAdaptation":
+        adaptation = payload.get("adaptation") if isinstance(payload, dict) else None
+        adaptation = adaptation if isinstance(adaptation, dict) else {}
+        detail = adaptation.get("detail")
+        return cls(
+            task_id=str(payload.get("task_id", "")) if isinstance(payload, dict) else "",
+            node_id=node_id,
+            kind=str(adaptation.get("kind", "")),
+            reason=str(adaptation.get("reason", "")),
+            detail=dict(detail) if isinstance(detail, dict) else {},
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind, "reason": self.reason, "detail": dict(self.detail)}
+
+
+@dataclass(slots=True)
 class ActionResult:
     """來自 InfoAgent / NavigationAgent 的 atomic 動作結果。"""
 

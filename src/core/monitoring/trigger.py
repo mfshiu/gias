@@ -21,6 +21,7 @@ from typing import Any, Callable
 from .events import (
     ActionResult,
     EnvChange,
+    ExecutorAdaptation,
     NodeState,
     ReplanDecision,
     TriggerKind,
@@ -81,6 +82,7 @@ class ReplanTrigger:
         env_changes: list[EnvChange],
         cursor: PlanCursor,
         intent: str = "",
+        adaptations: list[ExecutorAdaptation] | None = None,
     ) -> ReplanDecision:
         # 1) 預算用盡 → ABORT
         if self.budget_guard is not None and self.budget_guard.deadline_reached():
@@ -112,7 +114,12 @@ class ReplanTrigger:
         if decision.is_actionable():
             return decision
 
-        # 5) LLM 升級（可選）：規則對應不到節點的相關環境變動（例：名稱寫法不同）
+        # 5) 執行端自行調整：放寬了限制才走得下去 → 由 LLM 判斷是否要重規劃（未啟用時接受並記錄）
+        decision = self._decide_from_adaptations(adaptations or [], cursor, intent=intent)
+        if decision.is_actionable():
+            return decision
+
+        # 6) LLM 升級（可選）：規則對應不到節點的相關環境變動（例：名稱寫法不同）
         relevant = self._relevant_changes(env_changes)
         if relevant and _has_unfinished(cursor):
             decision = self._consult_llm(intent=intent, env_changes=relevant, action_results=[], cursor=cursor)
@@ -131,6 +138,7 @@ class ReplanTrigger:
         env_changes: list[EnvChange],
         action_results: list[ActionResult],
         cursor: PlanCursor,
+        adaptations: list[ExecutorAdaptation] | None = None,
     ) -> ReplanDecision | None:
         """詢問 LLM；回傳可執行且在預算內的決策，否則回傳 None（由規則接手）。"""
         if not self.config.enable_llm_assist or self._llm_decider is None:
@@ -141,12 +149,16 @@ class ReplanTrigger:
                 self._llm_cap_logged = True
             return None
         self._llm_calls += 1
+        kwargs: dict[str, Any] = {}
+        if adaptations:   # 只在有調整時傳入，相容只接受舊參數的自訂 decider
+            kwargs["adaptations"] = adaptations
         try:
             decision = self._llm_decider(
                 intent=intent,
                 env_changes=env_changes,
                 action_results=action_results,
                 cursor=cursor,
+                **kwargs,
             )
         except Exception as e:
             self.logger.warning("LLM trigger assist failed: %s", e)
@@ -157,6 +169,21 @@ class ReplanTrigger:
             self.logger.info("LLM decision %s exceeds budget; falling back to rules", decision.kind.value)
             return None
         return decision
+
+    def _decide_from_adaptations(
+        self, adaptations: list[ExecutorAdaptation], cursor: PlanCursor, *, intent: str = ""
+    ) -> ReplanDecision:
+        """執行端放寬了限制（如做不到避開人潮）時，意圖可能已無法照原樣達成。
+
+        規則層不重規劃（同樣的環境下新計畫多半也只能放寬），交給 LLM 判斷；
+        未啟用 LLM 時接受，調整已記錄在節點上。
+        """
+        relaxed = [a for a in adaptations if a.kind == "constraint_relaxed"]
+        if not relaxed:
+            return ReplanDecision.none()
+        decision = self._consult_llm(intent=intent, env_changes=[], action_results=[], cursor=cursor,
+                                     adaptations=relaxed)
+        return decision or ReplanDecision.none()
 
     def _within_budget(self, decision: ReplanDecision, cursor: PlanCursor) -> bool:
         """LLM 的決策若超出預算會被 PlanRepair 拒絕而卡住節點，因此先在這裡擋下。"""

@@ -156,6 +156,8 @@ class NodeRecord:
     error: str | None = None
     dispatched_at: float | None = None
     finished_at: float | None = None
+    # 執行端回報的自行調整（改路線、放寬限制）；意圖層據此得知執行偏離了原計畫
+    adaptations: list[dict[str, Any]] = field(default_factory=list)
 
     def is_terminal(self) -> bool:
         return self.state in TERMINAL_STATES
@@ -177,6 +179,7 @@ class NodeRecord:
             "last_result": self.last_result,
             "dispatched_at": self.dispatched_at,
             "finished_at": self.finished_at,
+            "adaptations": list(self.adaptations),
         }
 
 
@@ -526,6 +529,15 @@ class PlanCursor:
             existing.update(new_params)
             rec.node["params"] = existing
 
+    def record_adaptation(self, task_id: str, adaptation: dict[str, Any]) -> NodeRecord | None:
+        """把執行端回報的調整記到該節點；不是節點目前這次派工的回報則忽略並回傳 None。"""
+        nid = self._task_index.get(task_id)
+        rec = self._records.get(nid) if nid else None
+        if rec is None or rec.task_id != task_id:
+            return None
+        rec.adaptations.append(dict(adaptation))
+        return rec
+
     def update_pending_params(self, node_id: str, new_params: dict[str, Any]) -> bool:
         """覆蓋尚未派工（PENDING）節點的 params；節點不存在或不是 PENDING 時回傳 False。"""
         rec = self._records.get(node_id)
@@ -680,4 +692,5 @@ class PlanCursor:
             "ok": rec.state == NodeState.DONE,
             "result": rec.last_result,
             "error": rec.error,
+            "adaptations": list(rec.adaptations),
         }

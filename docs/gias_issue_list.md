@@ -77,7 +77,7 @@
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
 | **V-06** | 實驗驗證 | 執行端 Agent 都是模擬的：回傳 `"simulated": True` 和固定訊息 | [_executor_utils.py:158](../src/agents/_executor_utils.py#L158) | 「任務成功」不代表任務真的完成 | 未處理 |
-| **L-04** | 閉環／監測 | 動態調適發生在 NavigationAgent 內部（自己查兩次黑板），意圖層並不知道 | [navigation_agent.py:98](../src/agents/navigation_agent.py#L98) | 調適能力歸屬在執行端，不在 IPM，和架構敘述不一致 | 未處理 |
+| **L-04** | 閉環／監測 | 動態調適發生在 NavigationAgent 內部（自己查兩次黑板），意圖層並不知道 | [navigation_agent.py:98](../src/agents/navigation_agent.py#L98) | 調適能力歸屬在執行端，不在 IPM，和架構敘述不一致 | 已修正 |
 | **C-05** | 正確性 | 有依賴循環時，相關節點會被當成孤兒放到第一層先執行，而且沒有警告 | [cursor.py:191](../src/core/monitoring/cursor.py#L191) | 違反執行順序 | 已修正（059947d） |
 | **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 已修正（059947d） |
 | **C-07** | 正確性 | 參數用正規表示式從 LLM 字串解析，不依 `params_schema` 驗證型別、enum 或必填 | [planner.py:23](../src/core/intent/planner.py#L23) | 例如 `Interests=null` 會被當成字串 "null" 傳下去 | 已修正（059947d） |
@@ -198,6 +198,22 @@
 ### 2026-10-10：C-09（commit 9749343）
 
 `BudgetGuard.exhausted()` 是監測迴圈的結束條件，行為（只看 deadline）是對的，錯的是註解（寫成「replan 配額用完 + deadline 過了」）。若照註解把 replan 配額用完也算耗盡，最後一次 replan 一用掉配額迴圈就結束，剛換上的新步驟永遠不會執行（以突變測試確認：`max_replans=1` 的整合測試會失敗）。已修正註解，說明配額用完只代表不能再 replan / retry；並新增單元測試固定此語意（`tests/monitoring/test_budget.py`）。程式行為不變。
+
+
+### 2026-10-11：L-04
+
+局部調整留在執行端（Holonic 的分工），但必須回報上層：
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 回報協定 | 執行端以 `*.progress` 的 `state="adapted"` 即時回報調整，並附在結果的 `result.adaptations`；種類有 `reroute`（改路線、目標不變）與 `constraint_relaxed`（沒有路線能滿足限制，只好放寬） | `_executor_utils.py`（`AdaptationLog`）、`docs/monitoring_protocol.md` §5.1 |
+| 執行端 | NavigationAgent：兩次查黑板之間人潮改變而改路線時回報 `reroute`。GuideAgent：就地繞行時回報 `reroute`（含原路線與新路線），必須放寬 `avoid_crowded` 時回報 `constraint_relaxed`（連續放寬只回報一次） | `navigation_agent.py`、`navigation_scenario/live/guide_agent.py` |
+| 意圖層 | IntentionalAgent 訂閱 progress；ExecutionMonitor 把 `adapted` 事件放進 queue（其他 progress 仍只記 log）；調整記在節點上並出現在執行摘要。`constraint_relaxed` 交給 trigger：啟用 LLM 輔助時由 LLM 判斷是否重規劃（例如原意圖要求避開人潮），否則接受；`reroute` 只記錄 | `monitor.py`、`cursor.py`、`trigger.py`、`llm_advisor.py`、`intentional_agent.py` |
+| live benchmark | 每個案例的 `metrics.extra.executor_adaptations_reported` 列出意圖層收到的調整 | `navigation_scenario/live/evaluation.py` |
+
+新增測試 15 個，並以突變測試確認關鍵測試在還原修正後會失敗。全部非 integration 測試共 796 個通過、10 個略過。
+
+L-05（進度訊息只寫進 log）部分改善：`adapted` 事件已用於監測判斷；`running` 等其他進度仍只記 log。
 
 ---
 

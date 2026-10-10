@@ -789,3 +789,47 @@ def test_build_trigger_config_passes_entity_maps():
     tc = agent._build_trigger_config()
     assert tc.entity_aliases == {"AI_Tech_Area": ["AI 展區"]}
     assert tc.entity_parents == {"B_AI1": "AI_Tech_Area"}
+
+
+# ----------------------------------------------------------------------
+# L-04：執行端的調整回報到意圖層
+# ----------------------------------------------------------------------
+def _adapting_dispatcher(agent, adaptation):
+    def dispatcher(node, payload):
+        if node.get("_cancel"):
+            return
+        agent._monitor.on_progress("navigation.progress", {
+            "task_id": payload["task_id"], "state": "adapted", "adaptation": adaptation})
+        agent._monitor.on_action_result("navigation.result", {"task_id": payload["task_id"], "ok": True})
+    return dispatcher
+
+
+def test_executor_adaptation_is_recorded_on_node():
+    agent = _make_agent()
+    plan = _root([_atomic("a", task="LocateExhibit", topic="navigation.request", target="B_GM1")])
+    adaptation = {"kind": "reroute", "reason": "passage blocked", "detail": {"at": "P_Info"}}
+    result = agent.execute_plan_with_monitoring(plan, dispatcher=_adapting_dispatcher(agent, adaptation),
+                                                llm_decider=_no_llm)
+    assert result["ok"] is True
+    assert result["results"][0]["adaptations"] == [adaptation]
+
+
+def test_constraint_relaxation_lets_llm_replan():
+    agent = _make_agent()
+    plan = _root([_composite("L2-1", [_atomic("a", task="LocateExhibit", topic="navigation.request")])])
+    calls = []
+
+    def decider(*, intent, env_changes, action_results, cursor, adaptations=None):
+        calls.append(adaptations)
+        return ReplanDecision(kind=TriggerKind.REPLAN_SUBTREE, affected_node_ids=("a",), subtree_root_id="L2-1",
+                              reason="llm: avoid_crowded could not be kept")
+
+    relaxed = {"kind": "constraint_relaxed", "reason": "no route", "detail": {"constraint": "avoid_crowded"}}
+    new_sub = _composite("NEW", [_atomic("na", task="ExplainExhibit")])
+    disp = _adapting_dispatcher(agent, relaxed)
+    result = agent.execute_plan_with_monitoring(
+        plan, dispatcher=disp, subtree_planner=lambda intent, ctx: new_sub,
+        trigger_config=TriggerConfig(enable_llm_assist=True), llm_decider=decider,
+    )
+    assert calls and calls[0][0].kind == "constraint_relaxed"
+    assert any(e["kind"] == "replace_subtree" for e in result["replan_log"])

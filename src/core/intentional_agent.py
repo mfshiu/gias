@@ -41,7 +41,9 @@ from src.core.intent.llm_decomposer import LLMDecomposer
 from src.core.intent.planner import RecursivePlanner
 from src.core.intent.scope_gate import ScopeGate
 from src.agents._executor_utils import (
+    TOPIC_INFO_PROGRESS,
     TOPIC_INFO_RESULT,
+    TOPIC_NAVIGATION_PROGRESS,
     TOPIC_NAVIGATION_RESULT,
     build_action_payload,
     build_cancel_payload,
@@ -744,12 +746,21 @@ class IntentionalAgent(Agent):
                 # 3b-1) 逾時未回報的節點視同失敗，交給 trigger 走 retry / replan
                 fresh.extend(self._expire_overdue_atomics(cursor, budget, dispatcher=dispatcher))
 
+                # 3b-2) 執行端自行做的調整（改路線、放寬限制）記到節點上，交給 trigger 判斷
+                adaptations = []
+                for ad in monitor.drain_adaptations():
+                    rec = cursor.record_adaptation(ad.task_id, ad.to_dict())
+                    if rec is not None:
+                        logger.info("Executor adapted node %s (%s): %s", rec.node_id, ad.kind, ad.reason)
+                        adaptations.append(ad)
+
                 # 3c) 諮詢 trigger
                 decision = trigger.decide(
                     action_results=fresh,
                     env_changes=changes,
                     cursor=cursor,
                     intent=loop_intent,
+                    adaptations=adaptations,
                 )
                 if decision.kind == TriggerKind.ABORT:
                     logger.warning("Trigger ABORT: %s", decision.reason)
@@ -766,7 +777,7 @@ class IntentionalAgent(Agent):
                     dispatched_now += 1
 
                 # 3e) 等待信號或 idle 自旋限制
-                if dispatched_now == 0 and not changes and not results and not fresh:
+                if dispatched_now == 0 and not changes and not results and not fresh and not adaptations:
                     got = monitor.wait_for_signal(timeout=budget.poll_interval_sec)
                     if not got:
                         idle_polls += 1
@@ -900,7 +911,7 @@ class IntentionalAgent(Agent):
         return facts
 
     def _ensure_result_subscriptions(self) -> None:
-        """訂閱 info.result / navigation.result；可重入。
+        """訂閱 info.result / navigation.result 與 *.progress（執行端的調整回報）；可重入。
 
         broker 尚未連線時（例如測試環境）會吞下例外，由 dispatcher 直接餵 monitor。
         """
@@ -910,6 +921,11 @@ class IntentionalAgent(Agent):
         for t in (TOPIC_INFO_RESULT, TOPIC_NAVIGATION_RESULT):
             try:
                 self.subscribe(t, "dict", monitor.on_action_result)
+            except Exception as e:
+                logger.debug("subscribe %s failed: %s", t, e)
+        for t in (TOPIC_INFO_PROGRESS, TOPIC_NAVIGATION_PROGRESS):
+            try:
+                self.subscribe(t, "dict", monitor.on_progress)
             except Exception as e:
                 logger.debug("subscribe %s failed: %s", t, e)
         self._result_subs_active = True

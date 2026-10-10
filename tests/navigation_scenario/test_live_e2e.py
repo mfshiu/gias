@@ -117,8 +117,12 @@ class _World:
 
     # ---- MQTT 替身 ----
     def _guide_publish(self, topic, data):
-        if topic.endswith(".result") and self.ia is not None and self.ia._monitor is not None:
+        if self.ia is None or self.ia._monitor is None:
+            return
+        if topic.endswith(".result"):
             self.ia._monitor.on_action_result(topic, data)
+        elif topic.endswith(".progress"):
+            self.ia._monitor.on_progress(topic, data)
 
     def _dispatch(self, node, payload):
         if node.get("_cancel"):
@@ -307,3 +311,13 @@ def test_failed_replan_keeps_robot_moving():
     assert m.extra["ia_replans"] == 0
     assert m.task_success is True
     assert result.final_path[-1] == "B_AI1"
+
+
+
+def test_executor_reroute_is_visible_to_intentional_agent():
+    """L-04：GuideAgent 就地繞行後，IntentionalAgent 的執行摘要記得這次調整。"""
+    with _World([_plan(("LocateExhibit", {"target_name": "B_GM1", "target_type": "booth"}))]) as world:
+        result = world.run("constrained_06_30")
+    reported = result.metrics.extra["executor_adaptations_reported"]
+    assert [a["kind"] for a in reported] == ["reroute"]
+    assert reported[0]["detail"]["at"] == "P_Info"

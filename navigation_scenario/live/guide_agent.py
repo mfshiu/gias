@@ -12,6 +12,8 @@ GuideAgent：live 模式的嚮導機器人（navigation executor）。
 - 機器人位置跨任務保留：重規劃後的新任務從目前位置出發，不採用 LLM 給的 current_location
 - 同一時間只走一個導航任務（平行派工的導航任務會排隊）
 - 每一步記錄在 trajectory，供 benchmark 計算實際距離、到達的目標與限制違反
+- 繞行與放寬限制以 adaptations 回報 IntentionalAgent（navigation.progress 的 adapted 事件，
+  並附在 navigation.result 的 result.adaptations）
 """
 
 from __future__ import annotations
@@ -21,7 +23,12 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
-from src.agents._executor_utils import CancelToken
+from src.agents._executor_utils import (
+    ADAPT_CONSTRAINT_RELAXED,
+    ADAPT_REROUTE,
+    AdaptationLog,
+    CancelToken,
+)
 from src.agents.navigation_agent import NavigationAgent
 from src.log_helper import init_logging
 
@@ -235,9 +242,12 @@ class GuideAgent(NavigationAgent):
         *,
         cancel_token: CancelToken | None = None,
         task_id: str | None = None,
+        adaptations: AdaptationLog | None = None,
     ) -> tuple[str, bool]:
         if task not in MOVE_TASKS:
-            return super().execute_task(task, params, cancel_token=cancel_token, task_id=task_id)
+            return super().execute_task(
+                task, params, cancel_token=cancel_token, task_id=task_id, adaptations=adaptations,
+            )
 
         if _truthy(params.get("avoid_crowded", False)):
             with self._state_lock:
@@ -250,7 +260,8 @@ class GuideAgent(NavigationAgent):
             reached: list[str] = []
             for raw in dests:
                 target = resolve_destination(self.snapshot_loader(), raw, start=self.position)
-                if not self._walk_to(target, task=task, task_id=task_id, cancel_token=cancel_token):
+                if not self._walk_to(target, task=task, task_id=task_id, cancel_token=cancel_token,
+                                     adaptations=adaptations):
                     return (f"{task} 已取消，停在 {self.position}", True)
                 reached.append(target)
             return (f"已抵達 {' → '.join(reached)}（目前位置 {self.position}）", False)
@@ -272,9 +283,18 @@ class GuideAgent(NavigationAgent):
         relaxed = shortest_path(snap, start, target, constraints=_HARD_CONSTRAINTS)
         return relaxed, relaxed.reachable
 
-    def _walk_to(self, target: str, *, task: str, task_id: str | None, cancel_token: CancelToken | None) -> bool:
+    def _walk_to(
+        self,
+        target: str,
+        *,
+        task: str,
+        task_id: str | None,
+        cancel_token: CancelToken | None,
+        adaptations: AdaptationLog | None = None,
+    ) -> bool:
         """沿最短路徑逐邊走到 target；被取消時回傳 False（停在最後到達的節點）。"""
         planned_rest: list[str] = []
+        was_relaxed = False
         while self.position != target:
             if cancel_token is not None and cancel_token.cancelled:
                 return False
@@ -284,6 +304,15 @@ class GuideAgent(NavigationAgent):
                 raise RouteUnavailable(f"no passable route from {self.position} to {target}")
             nxt = path.nodes[1]
             rerouted = bool(planned_rest) and path.nodes[1:] != planned_rest
+            if adaptations is not None:
+                if rerouted:
+                    adaptations.report(ADAPT_REROUTE, "environment changed along the planned route",
+                                       at=self.position, target=target,
+                                       previous_route=[self.position, *planned_rest], new_route=path.nodes)
+                if relaxed and not was_relaxed:
+                    adaptations.report(ADAPT_CONSTRAINT_RELAXED, "no route satisfies avoid_crowded",
+                                       constraint="avoid_crowded", at=self.position, target=target)
+            was_relaxed = relaxed
             distance = float(snap.edges[(self.position, nxt)].get("distance", 10))
             if not self._sleep(distance * self.seconds_per_meter, cancel_token):
                 return False   # 在邊上被取消：視為沒走完，停在原節點

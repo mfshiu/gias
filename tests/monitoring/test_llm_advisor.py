@@ -114,3 +114,18 @@ def test_call_queries_llm_and_returns_validated_decision():
     )
     assert d.kind == TriggerKind.REPLAN_ROOT
     assert llm.messages[0]["role"] == "system"
+
+
+
+def test_build_messages_includes_executor_adaptations():
+    from src.core.monitoring.events import ExecutorAdaptation
+
+    c = PlanCursor(_plan())
+    tid = c.mark_dispatched("a")
+    ad = ExecutorAdaptation(task_id=tid, kind="constraint_relaxed", reason="no route",
+                            detail={"constraint": "avoid_crowded"})
+    msgs = LLMReplanAdvisor(_FakeLLM({})).build_messages(
+        intent="x", env_changes=[], action_results=[], cursor=c, adaptations=[ad])
+    payload = json.loads(msgs[1]["content"])
+    assert payload["executor_adaptations"] == [
+        {"step_id": "a", "kind": "constraint_relaxed", "reason": "no route", "detail": {"constraint": "avoid_crowded"}}]
