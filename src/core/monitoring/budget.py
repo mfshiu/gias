@@ -20,7 +20,8 @@ class Budget:
     deadline_sec: float | None = None           # 整體執行 deadline；None 表示無上限
     poll_interval_sec: float = 0.5              # 監測迴圈 idle 時的等待週期
     cancel_grace_sec: float = 3.0               # 送出 cancel 後等多久仍未 ack 就放棄等待
-    node_timeout_sec: float | None = 30.0       # atomic 派工後多久沒回報視為失敗（節點 deadline_sec 優先）；None 表示不限
+    node_timeout_sec: float | None = 30.0       # 閒置逾時：多久沒收到執行端任何回報（進度或結果）視為失敗；
+                                                # 節點自訂 deadline_sec 優先（從派工起算）；None 表示不限
 
 
 class BudgetGuard:

@@ -833,3 +833,35 @@ def test_constraint_relaxation_lets_llm_replan():
     )
     assert calls and calls[0][0].kind == "constraint_relaxed"
     assert any(e["kind"] == "replace_subtree" for e in result["replan_log"])
+
+
+# ----------------------------------------------------------------------
+# L-05：進度回報當作心跳，長時間任務不會被判逾時
+# ----------------------------------------------------------------------
+def test_heartbeats_keep_long_running_step_alive():
+    agent = _make_agent()
+    plan = _root([_atomic("a", task="LocateExhibit", topic="navigation.request")])
+    dispatched = []
+
+    def dispatcher(node, payload):
+        if node.get("_cancel"):
+            return
+        dispatched.append(payload["task_id"])
+        task_id = payload["task_id"]
+
+        def run():
+            for i in range(8):               # 約 0.4 秒，比閒置逾時 0.15 秒長
+                time.sleep(0.05)
+                agent._monitor.on_progress("navigation.progress", {
+                    "task_id": task_id, "state": "running", "ratio": (i + 1) / 8, "note": f"step {i + 1}"})
+            agent._monitor.on_action_result("navigation.result", {"task_id": task_id, "ok": True})
+
+        threading.Thread(target=run, daemon=True).start()
+
+    result = agent.execute_plan_with_monitoring(
+        plan, dispatcher=dispatcher, llm_decider=_no_llm,
+        budget=Budget(max_replans=0, max_retries_per_node=1, poll_interval_sec=0.01, node_timeout_sec=0.15),
+    )
+    assert result["ok"] is True
+    assert len(dispatched) == 1                      # 沒有因逾時而重派
+    assert result["results"][0]["progress"]["note"] == "step 8"

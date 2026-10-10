@@ -116,6 +116,7 @@ class LLMReplanAdvisor:
                 "params": r.node.get("params") or {},
                 "state": r.state.value,
                 "error": r.error,
+                "progress": r.progress,
             }
             for r in cursor.all_records()
             if r.state not in (NodeState.OBSOLETE, NodeState.SKIPPED)

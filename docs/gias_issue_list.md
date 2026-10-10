@@ -96,7 +96,7 @@
 
 | 編號 | 類別 | 問題 | 位置 | 狀態 |
 |---|---|---|---|---|
-| **L-05** | 閉環／監測 | 進度訊息只寫進 log，沒有用在監測判斷 | [monitor.py:84](../src/core/monitoring/monitor.py#L84) | 未處理 |
+| **L-05** | 閉環／監測 | 進度訊息只寫進 log，沒有用在監測判斷 | [monitor.py:84](../src/core/monitoring/monitor.py#L84) | 已修正 |
 | **C-09** | 正確性 | `BudgetGuard.exhausted()` 只看 deadline，和它的註解、文件描述不符 | [budget.py:73](../src/core/monitoring/budget.py#L73) | 已修正（9749343） |
 | **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 未處理 |
 | **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 未處理 |
@@ -214,6 +214,19 @@
 新增測試 15 個，並以突變測試確認關鍵測試在還原修正後會失敗。全部非 integration 測試共 796 個通過、10 個略過。
 
 L-05（進度訊息只寫進 log）部分改善：`adapted` 事件已用於監測判斷；`running` 等其他進度仍只記 log。
+
+
+### 2026-10-11：L-05
+
+L-04 已讓 `adapted` 進度事件用於監測判斷；這次讓其他進度事件也發揮作用：
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 心跳 | ExecutionMonitor 把一般進度放進 queue；IntentionalAgent 記到節點上並更新「最後回報時間」。沒有自訂 `deadline_sec` 的節點，逾時改為從最後一次回報起算（閒置逾時），長時間執行但持續回報進度的任務不會被 C-04 的逾時誤判；節點自訂 `deadline_sec` 仍從派工起算。執行端若不送進度，行為與之前相同 | `monitor.py`、`cursor.py`、`events.py`（`ProgressUpdate`）、`intentional_agent.py`、`budget.py` |
+| 狀態 | 最新進度（state / ratio / note）出現在執行摘要，並提供給 LLM 判斷時參考 | `cursor.py`、`llm_advisor.py` |
+| 執行端 | GuideAgent 每走一步回報進度（目前位置、完成比例），兼作心跳 | `navigation_scenario/live/guide_agent.py` |
+
+新增測試 7 個，並以突變測試確認關鍵測試在還原修正後會失敗（包括「進度不可延長節點自訂截止時間」）。全部非 integration 測試共 803 個通過、10 個略過。
 
 ---
 

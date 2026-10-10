@@ -108,6 +108,36 @@ class EnvChange:
 
 
 @dataclass(slots=True)
+class ProgressUpdate:
+    """執行端的一般進度回報（*.progress 中 state 不是 "adapted" 的事件），同時當作心跳。"""
+
+    task_id: str
+    node_id: str = ""
+    state: str = ""
+    ratio: float | None = None
+    note: str = ""
+    received_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any], *, node_id: str = "") -> "ProgressUpdate":
+        ratio = payload.get("ratio")
+        try:
+            ratio = float(ratio) if ratio is not None else None
+        except (TypeError, ValueError):
+            ratio = None
+        return cls(
+            task_id=str(payload.get("task_id", "")),
+            node_id=node_id,
+            state=str(payload.get("state", "")),
+            ratio=ratio,
+            note=str(payload.get("note", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"state": self.state, "ratio": self.ratio, "note": self.note, "at": self.received_at}
+
+
+@dataclass(slots=True)
 class ExecutorAdaptation:
     """執行端在任務中自行做的調整（*.progress 的 state="adapted"），例如改路線、放寬限制。"""
 

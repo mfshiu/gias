@@ -120,6 +120,14 @@ Executor 行為：
 
 `state ∈ {started, running, finishing, done, cancelled, failed, adapted}`；progress 是 advisory，IA 不應依賴其抵達。
 
+IA 對 progress 的用法（只採用屬於節點目前派工的事件）：
+
+- **心跳**：任何 progress 都會更新節點的「最後回報時間」。沒有自訂 `deadline_sec` 的節點，
+  逾時（`intent.monitoring.node_timeout_sec`）從最後一次回報起算；長時間執行的任務只要持續回報進度就不會被判逾時。
+  節點自訂的 `deadline_sec` 是任務截止時間，從派工起算，不會因進度回報而延長
+- **狀態**：最新一筆（`state` / `ratio` / `note`）記在節點上，出現在執行摘要，並提供給 LLM 判斷時參考
+- 結束狀態仍以 `*.result` 為準；progress 的 `done` / `failed` / `cancelled` 只當作心跳
+
 ### 5.1 執行端的自行調整（`state = "adapted"`）
 
 執行端在任務中自行改變做法時（例如因環境變動改走其他路線、或必須放寬限制才走得下去），
@@ -228,7 +236,7 @@ LLM 的回覆會先驗證（節點必須存在、狀態允許該操作、未超�
 
 | 設定鍵（`[intent.monitoring]`） | 預設 | 說明 |
 |------|------|------|
-| `node_timeout_sec` | 30 | 節點逾時；≤ 0 表示不限 |
+| `node_timeout_sec` | 30 | 節點閒置逾時：多久沒收到執行端任何回報（進度或結果）視為失敗；節點自訂 `deadline_sec` 優先；≤ 0 表示不限 |
 | `enable_llm_assist` | false | 啟用 LLM 輔助判斷 |
 | `llm_max_calls` | 10 | 每個 plan 詢問 LLM 的上限 |
 | `blackboard_timeout_sec` | 2 | 黑板訂閱 / 查詢的逾時秒數 |

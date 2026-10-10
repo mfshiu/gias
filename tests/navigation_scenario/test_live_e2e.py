@@ -59,12 +59,13 @@ def _plan(*steps) -> dict:
 class _World:
     """記憶體中的 Blackboard + GuideAgent + 會「規劃」出預備計畫的 IntentionalAgent。"""
 
-    def __init__(self, plans: list[dict], *, seconds_per_meter: float = 0.02):
+    def __init__(self, plans: list[dict], *, seconds_per_meter: float = 0.02, node_timeout_sec: float = 10):
         self.snap = snapshot_from_config()
         self.guide = GuideAgent(_EMPTY_BROKER, snapshot_loader=lambda: self.snap,
                                 seconds_per_meter=seconds_per_meter)
         self.guide.publish = self._guide_publish
         self.plans = list(plans)
+        self.node_timeout_sec = node_timeout_sec
         self.contexts: list[dict | None] = []
         self.handlers: dict[str, object] = {}
         self.ia: IntentionalAgent | None = None
@@ -137,7 +138,8 @@ class _World:
         return self.plans.pop(0) if self.plans else {"type": "leaf_unresolved", "reason": "no more plans"}
 
     def launch(self, case):
-        cfg = live_agent_config(_base_config(), enable_llm_assist=False, node_timeout_sec=10, deadline_sec=20)
+        cfg = live_agent_config(_base_config(), enable_llm_assist=False,
+                                node_timeout_sec=self.node_timeout_sec, deadline_sec=20)
         cfg["intent"]["monitoring"].update({"max_replans": 2, "max_retries_per_node": 1})
         with patch("src.core.intentional_agent.Neo4jBoltAdapter") as adapter_cls:
             adapter_cls.from_config.return_value = MagicMock()
@@ -321,3 +323,14 @@ def test_executor_reroute_is_visible_to_intentional_agent():
     reported = result.metrics.extra["executor_adaptations_reported"]
     assert [a["kind"] for a in reported] == ["reroute"]
     assert reported[0]["detail"]["at"] == "P_Info"
+
+
+
+def test_long_walk_is_kept_alive_by_step_progress():
+    """L-05：整段路程（約 1 秒）比動作逾時（0.6 秒）長，但每走一步都有進度回報，不會被判逾時。"""
+    with _World([_plan(("LocateExhibit", {"target_name": "B_GM1", "target_type": "booth"}))],
+                seconds_per_meter=0.02, node_timeout_sec=0.6) as world:
+        result = world.run("constrained_06_30")
+    m = result.metrics
+    assert m.task_success is True
+    assert m.extra["ia_redispatches"] == 0

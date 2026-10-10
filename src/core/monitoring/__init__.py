@@ -22,6 +22,7 @@ from .events import (
     EnvChange,
     ActionResult,
     ExecutorAdaptation,
+    ProgressUpdate,
 )
 from .cursor import DuplicateNodeIdError, NodeRecord, PlanCursor, find_dependency_cycles, find_duplicate_node_ids
 from .budget import Budget, BudgetGuard
@@ -38,6 +39,7 @@ __all__ = [
     "EnvChange",
     "ActionResult",
     "ExecutorAdaptation",
+    "ProgressUpdate",
     "DuplicateNodeIdError",
     "NodeRecord",
     "PlanCursor",

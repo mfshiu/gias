@@ -17,7 +17,7 @@ import time
 from queue import Empty, Queue
 from typing import Any
 
-from .events import ActionResult, EnvChange, ExecutorAdaptation
+from .events import ActionResult, EnvChange, ExecutorAdaptation, ProgressUpdate
 
 
 class ExecutionMonitor:
@@ -27,6 +27,7 @@ class ExecutionMonitor:
         self._env_queue: Queue[EnvChange] = Queue()
         self._result_queue: Queue[ActionResult] = Queue()
         self._adaptation_queue: Queue[ExecutorAdaptation] = Queue()
+        self._progress_queue: Queue[ProgressUpdate] = Queue()
         self._signal_event = threading.Event()
         self._task_to_node: dict[str, str] = {}
         self._lock = threading.Lock()
@@ -85,13 +86,16 @@ class ExecutionMonitor:
     def on_progress(self, topic: str, payload: Any) -> None:
         """進度通知（訂閱 `info.progress` / `navigation.progress`）。
 
-        state="adapted"（執行端自行改路線、放寬限制等）進入 queue 交給監測迴圈；其他只記 log。
+        - state="adapted"（執行端自行改路線、放寬限制等）→ adaptation queue
+        - 其他 state → progress queue：記到節點上，並當作心跳延長閒置逾時
         """
         data = _extract_dict(payload)
-        if isinstance(data, dict) and data.get("state") == "adapted" and data.get("task_id"):
-            task_id = str(data["task_id"])
-            with self._lock:
-                node_id = self._task_to_node.get(task_id, "")
+        if not isinstance(data, dict) or not data.get("task_id"):
+            return
+        task_id = str(data["task_id"])
+        with self._lock:
+            node_id = self._task_to_node.get(task_id, "")
+        if data.get("state") == "adapted":
             adaptation = ExecutorAdaptation.from_payload(data, node_id=node_id)
             self._adaptation_queue.put(adaptation)
             self._signal_event.set()
@@ -100,13 +104,13 @@ class ExecutionMonitor:
                 task_id, adaptation.kind, adaptation.reason,
             )
             return
-        if isinstance(data, dict):
-            self.logger.debug(
-                "ExecutionMonitor progress: task=%s state=%s ratio=%s",
-                data.get("task_id"),
-                data.get("state"),
-                data.get("ratio"),
-            )
+        update = ProgressUpdate.from_payload(data, node_id=node_id)
+        self._progress_queue.put(update)
+        self._signal_event.set()
+        self.logger.debug(
+            "ExecutionMonitor progress: task=%s state=%s ratio=%s note=%s",
+            task_id, update.state, update.ratio, update.note,
+        )
 
     # ------------------------------------------------------------------
     # Consumer hooks（IA 監測迴圈）
@@ -125,6 +129,15 @@ class ExecutionMonitor:
         while True:
             try:
                 out.append(self._result_queue.get_nowait())
+            except Empty:
+                break
+        return out
+
+    def drain_progress(self) -> list[ProgressUpdate]:
+        out: list[ProgressUpdate] = []
+        while True:
+            try:
+                out.append(self._progress_queue.get_nowait())
             except Empty:
                 break
         return out
@@ -153,7 +166,12 @@ class ExecutionMonitor:
         return triggered or self._has_pending()
 
     def _has_pending(self) -> bool:
-        return not (self._env_queue.empty() and self._result_queue.empty() and self._adaptation_queue.empty())
+        return not (
+            self._env_queue.empty()
+            and self._result_queue.empty()
+            and self._adaptation_queue.empty()
+            and self._progress_queue.empty()
+        )
 
 
 def _extract_dict(payload: Any) -> dict[str, Any]:

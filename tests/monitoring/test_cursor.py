@@ -429,3 +429,38 @@ def test_record_adaptation_only_for_current_dispatch():
     c.accept_action_result(new, {"task_id": new, "ok": True})
     x = next(r for r in c.summary()["results"] if r["id"] == "x")
     assert x["adaptations"] == [{"kind": "reroute"}]
+
+
+
+# ----------------------------------------------------------------------
+# L-05：進度記到節點上；閒置逾時從最後一次回報起算
+# ----------------------------------------------------------------------
+def test_progress_extends_idle_timeout_but_not_node_deadline():
+    plan = _parallel_two_atomics()
+    plan["sub_plans"][1]["deadline_sec"] = 30          # y 有自訂截止時間（從派工起算）
+    c = PlanCursor(plan)
+    tx, ty = c.mark_dispatched("x"), c.mark_dispatched("y")
+    t0 = c.record("x").dispatched_at
+    c.record_progress(tx, {"state": "running", "ratio": 0.5}, at=t0 + 25)
+    c.record_progress(ty, {"state": "running", "ratio": 0.5}, at=t0 + 25)
+
+    def overdue(at):
+        return sorted(r.node_id for r in c.overdue_in_flight(default_timeout_sec=30, now=t0 + at))
+
+    assert overdue(40) == ["y"]          # x：距上次回報 15 秒；y：自訂截止 30 秒已過
+    assert overdue(56) == ["x", "y"]     # x：距上次回報 31 秒
+
+
+def test_record_progress_only_for_current_dispatch_and_reset_on_redispatch():
+    c = PlanCursor(_parallel_two_atomics())
+    old = c.mark_dispatched("x")
+    assert c.record_progress(old, {"state": "running"}) is not None
+    c.accept_action_result(old, {"task_id": old, "ok": False})
+    c.reset_for_retry("x")
+    new = c.mark_dispatched("x")
+    assert c.record("x").progress is None
+    assert c.record_progress(old, {"state": "running"}) is None
+    c.record_progress(new, {"state": "running", "note": "at B_AI1"})
+    c.accept_action_result(new, {"task_id": new, "ok": True})
+    x = next(r for r in c.summary()["results"] if r["id"] == "x")
+    assert x["progress"] == {"state": "running", "note": "at B_AI1"}

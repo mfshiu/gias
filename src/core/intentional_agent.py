@@ -743,10 +743,14 @@ class IntentionalAgent(Agent):
                     if rec is not None:
                         fresh.append(ar)
 
-                # 3b-1) 逾時未回報的節點視同失敗，交給 trigger 走 retry / replan
+                # 3b-1) 進度回報：記到節點上並當作心跳（延長閒置逾時）
+                for update in monitor.drain_progress():
+                    cursor.record_progress(update.task_id, update.to_dict(), at=update.received_at)
+
+                # 3b-2) 逾時未回報的節點視同失敗，交給 trigger 走 retry / replan
                 fresh.extend(self._expire_overdue_atomics(cursor, budget, dispatcher=dispatcher))
 
-                # 3b-2) 執行端自行做的調整（改路線、放寬限制）記到節點上，交給 trigger 判斷
+                # 3b-3) 執行端自行做的調整（改路線、放寬限制）記到節點上，交給 trigger 判斷
                 adaptations = []
                 for ad in monitor.drain_adaptations():
                     rec = cursor.record_adaptation(ad.task_id, ad.to_dict())
@@ -991,7 +995,9 @@ class IntentionalAgent(Agent):
         now = time.time()
         for rec in cursor.overdue_in_flight(default_timeout_sec=budget.node_timeout_sec, now=now):
             task_id = rec.task_id or ""
-            error = f"timeout: no result {now - (rec.dispatched_at or now):.1f}s after dispatch"
+            last = max(rec.dispatched_at or now, rec.last_activity_at or 0.0)
+            error = (f"timeout: no result {now - (rec.dispatched_at or now):.1f}s after dispatch, "
+                     f"last report {now - last:.1f}s ago")
             logger.warning("Action timeout: node=%s task_id=%s %s", rec.node_id, task_id, error)
             self._send_cancel(rec, reason="timeout", dispatcher=dispatcher)
             payload = {"task_id": task_id, "ok": False, "error": error, "task": rec.node.get("task") or ""}

@@ -295,6 +295,7 @@ class GuideAgent(NavigationAgent):
         """沿最短路徑逐邊走到 target；被取消時回傳 False（停在最後到達的節點）。"""
         planned_rest: list[str] = []
         was_relaxed = False
+        walked_here = 0
         while self.position != target:
             if cancel_token is not None and cancel_token.cancelled:
                 return False
@@ -331,6 +332,10 @@ class GuideAgent(NavigationAgent):
             self._write_position(nxt)
             self._notify(step)
             planned_rest = path.nodes[2:]
+            walked_here += 1
+            if task_id:   # 進度兼心跳：讓 IntentionalAgent 知道機器人位置，長距離導航也不會被判逾時
+                self._publish_progress(task_id, state="running", note=f"at {nxt}",
+                                       ratio=walked_here / (walked_here + len(planned_rest)))
         return True
 
     def _notify(self, step: WalkStep) -> None:

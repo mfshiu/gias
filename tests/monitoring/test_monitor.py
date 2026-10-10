@@ -95,3 +95,20 @@ def test_adapted_progress_is_queued_with_node_binding():
     assert m.wait_for_signal(0.01) is True
     [ad] = m.drain_adaptations()
     assert (ad.task_id, ad.node_id, ad.kind, ad.detail) == ("t1", "n1", "reroute", {"at": "P_Info"})
+
+
+# ----------------------------------------------------------------------
+# L-05：一般進度進入 progress queue（當作心跳）
+# ----------------------------------------------------------------------
+def test_running_progress_is_queued_as_heartbeat():
+    from src.core.monitoring.monitor import ExecutionMonitor
+
+    m = ExecutionMonitor()
+    m.bind_task("t1", "n1")
+    m.on_progress("navigation.progress", {"task_id": "t1", "state": "running", "ratio": "0.5", "note": "at P_Info"})
+    m.on_progress("navigation.progress", {"state": "running"})          # 沒有 task_id：略過
+    assert m.wait_for_signal(0.01) is True
+    [update] = m.drain_progress()
+    assert (update.task_id, update.node_id, update.state, update.ratio, update.note) == (
+        "t1", "n1", "running", 0.5, "at P_Info")
+    assert m.drain_adaptations() == []

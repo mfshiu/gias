@@ -247,5 +247,28 @@ def test_adaptations_reach_progress_topic_and_result():
         result = guide._handle("navigation.request", _Parcel({
             "task": "LocateExhibit", "task_id": "T-adapt", "params": {"target_name": "B_GM1"}}))
     assert result["result"]["adaptations"][0]["kind"] == "reroute"
-    progress = [c[0][1] for c in pub.call_args_list if c[0][0] == "navigation.progress"]
-    assert progress and progress[0]["state"] == "adapted" and progress[0]["task_id"] == "T-adapt"
+    adapted = [c[0][1] for c in pub.call_args_list
+               if c[0][0] == "navigation.progress" and c[0][1]["state"] == "adapted"]
+    assert len(adapted) == 1 and adapted[0]["task_id"] == "T-adapt"
+
+
+
+# ----------------------------------------------------------------------
+# L-05：每走一步回報進度（心跳 + 位置）
+# ----------------------------------------------------------------------
+def test_each_step_reports_progress_with_position():
+    guide = _guide(snapshot_from_config())
+    with patch.object(guide, "publish") as pub:
+        guide._handle("navigation.request", _Parcel({
+            "task": "LocateExhibit", "task_id": "T-p", "params": {"target_name": "B_AI1"}}))
+    running = [c[0][1] for c in pub.call_args_list
+               if c[0][0] == "navigation.progress" and c[0][1]["state"] == "running"]
+    assert [p["note"] for p in running] == ["at P_Info", "at P_North_Hub", "at B_AI1"]
+    assert [round(p["ratio"], 3) for p in running] == [0.333, 0.667, 1.0]
+
+
+def test_no_progress_for_legacy_requests_without_task_id():
+    guide = _guide(snapshot_from_config())
+    with patch.object(guide, "publish") as pub:
+        guide._handle("navigation.request", _Parcel({"task": "LocateExhibit", "params": {"target_name": "B_AI1"}}))
+    assert [c for c in pub.call_args_list if c[0][0] == "navigation.progress"] == []

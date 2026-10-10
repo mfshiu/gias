@@ -158,6 +158,9 @@ class NodeRecord:
     finished_at: float | None = None
     # 執行端回報的自行調整（改路線、放寬限制）；意圖層據此得知執行偏離了原計畫
     adaptations: list[dict[str, Any]] = field(default_factory=list)
+    # 最新的進度回報（state / ratio / note / at）與最後一次收到執行端回報的時間（心跳）
+    progress: dict[str, Any] | None = None
+    last_activity_at: float | None = None
 
     def is_terminal(self) -> bool:
         return self.state in TERMINAL_STATES
@@ -180,6 +183,7 @@ class NodeRecord:
             "dispatched_at": self.dispatched_at,
             "finished_at": self.finished_at,
             "adaptations": list(self.adaptations),
+            "progress": self.progress,
         }
 
 
@@ -390,9 +394,12 @@ class PlanCursor:
     def overdue_in_flight(
         self, *, default_timeout_sec: float | None, now: float | None = None
     ) -> list[NodeRecord]:
-        """回傳派工後超過時限仍未回報結果的 IN_FLIGHT 節點。
+        """回傳逾時仍未回報結果的 IN_FLIGHT 節點。
 
-        時限優先取節點自身的 deadline_sec，否則用 default_timeout_sec；兩者皆無則不逾時。
+        - 節點自訂 deadline_sec：任務截止時間，從派工起算，進度回報不會延長
+        - 否則用 default_timeout_sec 當閒置逾時：從最後一次收到執行端回報（派工、進度、調整）起算，
+          長時間執行但持續回報進度的任務不會被誤判
+        兩者皆無則不逾時。
         """
         now = time.time() if now is None else now
         overdue: list[NodeRecord] = []
@@ -400,9 +407,11 @@ class PlanCursor:
             if rec.state != NodeState.IN_FLIGHT or rec.dispatched_at is None:
                 continue
             limit = _positive_float(rec.node.get("deadline_sec"))
+            since = rec.dispatched_at
             if limit is None:
                 limit = _positive_float(default_timeout_sec)
-            if limit is not None and now - rec.dispatched_at >= limit:
+                since = max(rec.dispatched_at, rec.last_activity_at or rec.dispatched_at)
+            if limit is not None and now - since >= limit:
                 overdue.append(rec)
         return overdue
 
@@ -427,6 +436,8 @@ class PlanCursor:
         rec.attempts += 1
         rec.dispatched_at = time.time()
         rec.error = None
+        rec.progress = None
+        rec.last_activity_at = None
         self._task_index[tid] = node_id
         return tid
 
@@ -536,6 +547,17 @@ class PlanCursor:
         if rec is None or rec.task_id != task_id:
             return None
         rec.adaptations.append(dict(adaptation))
+        rec.last_activity_at = time.time()
+        return rec
+
+    def record_progress(self, task_id: str, progress: dict[str, Any], *, at: float | None = None) -> NodeRecord | None:
+        """記錄最新進度並更新心跳時間；不是節點目前這次派工的回報則忽略並回傳 None。"""
+        nid = self._task_index.get(task_id)
+        rec = self._records.get(nid) if nid else None
+        if rec is None or rec.task_id != task_id:
+            return None
+        rec.progress = dict(progress)
+        rec.last_activity_at = time.time() if at is None else at
         return rec
 
     def update_pending_params(self, node_id: str, new_params: dict[str, Any]) -> bool:
@@ -693,4 +715,5 @@ class PlanCursor:
             "result": rec.last_result,
             "error": rec.error,
             "adaptations": list(rec.adaptations),
+            "progress": rec.progress,
         }
