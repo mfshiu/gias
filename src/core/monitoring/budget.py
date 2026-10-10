@@ -72,9 +72,10 @@ class BudgetGuard:
         return self.elapsed_sec() >= self.budget.deadline_sec
 
     def exhausted(self) -> bool:
-        """Replan 配額用完 + deadline 過了，視為整體預算耗盡。
+        """整體執行預算是否耗盡（監測迴圈的結束條件）：目前只看 deadline。
 
-        注意：deadline 單獨到達也算耗盡（即使還有 retry 配額）。
+        replan / retry 配額用完不算耗盡：那只代表不能再 replan / retry，
+        計畫中其餘節點（包括最後一次 replan 換上的新節點）仍要執行完。
         """
         return self.deadline_reached()
 

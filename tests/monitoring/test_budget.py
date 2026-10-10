@@ -51,3 +51,14 @@ def test_snapshot_has_counters():
     snap = g.snapshot()
     assert snap["replans_used"] == 1
     assert snap["retries_by_node"] == {"a": 1}
+
+
+def test_used_up_replans_and_retries_do_not_exhaust_budget():
+    """exhausted() 是監測迴圈的結束條件：配額用完只是不能再 replan / retry，
+    最後一次 replan 換上的節點仍要執行，所以不可視為耗盡（C-09）。"""
+    g = BudgetGuard(Budget(max_replans=1, max_retries_per_node=1, deadline_sec=None))
+    g.consume_replan()
+    g.consume_retry("a")
+    assert g.replan_available() is False
+    assert g.retry_available("a") is False
+    assert g.exhausted() is False
