@@ -77,7 +77,7 @@
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
 | **V-06** | 實驗驗證 | 執行端 Agent 都是模擬的：回傳 `"simulated": True` 和固定訊息 | [_executor_utils.py:158](../src/agents/_executor_utils.py#L158) | 「任務成功」不代表任務真的完成 | 未處理 |
-| **L-04** | 閉環／監測 | 動態調適發生在 NavigationAgent 內部（自己查兩次黑板），意圖層並不知道 | [navigation_agent.py:98](../src/agents/navigation_agent.py#L98) | 調適能力歸屬在執行端，不在 IPM，和架構敘述不一致 | 已修正 |
+| **L-04** | 閉環／監測 | 動態調適發生在 NavigationAgent 內部（自己查兩次黑板），意圖層並不知道 | [navigation_agent.py:98](../src/agents/navigation_agent.py#L98) | 調適能力歸屬在執行端，不在 IPM，和架構敘述不一致 | 已修正（5cf062a） |
 | **C-05** | 正確性 | 有依賴循環時，相關節點會被當成孤兒放到第一層先執行，而且沒有警告 | [cursor.py:191](../src/core/monitoring/cursor.py#L191) | 違反執行順序 | 已修正（059947d） |
 | **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 已修正（059947d） |
 | **C-07** | 正確性 | 參數用正規表示式從 LLM 字串解析，不依 `params_schema` 驗證型別、enum 或必填 | [planner.py:23](../src/core/intent/planner.py#L23) | 例如 `Interests=null` 會被當成字串 "null" 傳下去 | 已修正（059947d） |
@@ -200,7 +200,7 @@
 `BudgetGuard.exhausted()` 是監測迴圈的結束條件，行為（只看 deadline）是對的，錯的是註解（寫成「replan 配額用完 + deadline 過了」）。若照註解把 replan 配額用完也算耗盡，最後一次 replan 一用掉配額迴圈就結束，剛換上的新步驟永遠不會執行（以突變測試確認：`max_replans=1` 的整合測試會失敗）。已修正註解，說明配額用完只代表不能再 replan / retry；並新增單元測試固定此語意（`tests/monitoring/test_budget.py`）。程式行為不變。
 
 
-### 2026-10-11：L-04
+### 2026-10-11：L-04（commit 5cf062a）
 
 局部調整留在執行端（Holonic 的分工），但必須回報上層：
 
