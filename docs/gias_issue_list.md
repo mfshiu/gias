@@ -96,7 +96,7 @@
 
 | 編號 | 類別 | 問題 | 位置 | 狀態 |
 |---|---|---|---|---|
-| **L-05** | 閉環／監測 | 進度訊息只寫進 log，沒有用在監測判斷 | [monitor.py:84](../src/core/monitoring/monitor.py#L84) | 已修正 |
+| **L-05** | 閉環／監測 | 進度訊息只寫進 log，沒有用在監測判斷 | [monitor.py:84](../src/core/monitoring/monitor.py#L84) | 已修正（165b73b） |
 | **C-09** | 正確性 | `BudgetGuard.exhausted()` 只看 deadline，和它的註解、文件描述不符 | [budget.py:73](../src/core/monitoring/budget.py#L73) | 已修正（9749343） |
 | **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 未處理 |
 | **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 未處理 |
@@ -216,7 +216,7 @@
 L-05（進度訊息只寫進 log）部分改善：`adapted` 事件已用於監測判斷；`running` 等其他進度仍只記 log。
 
 
-### 2026-10-11：L-05
+### 2026-10-11：L-05（commit 165b73b）
 
 L-04 已讓 `adapted` 進度事件用於監測判斷；這次讓其他進度事件也發揮作用：
 
