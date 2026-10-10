@@ -97,7 +97,7 @@
 | 編號 | 類別 | 問題 | 位置 | 狀態 |
 |---|---|---|---|---|
 | **L-05** | 閉環／監測 | 進度訊息只寫進 log，沒有用在監測判斷 | [monitor.py:84](../src/core/monitoring/monitor.py#L84) | 未處理 |
-| **C-09** | 正確性 | `BudgetGuard.exhausted()` 只看 deadline，和它的註解、文件描述不符 | [budget.py:73](../src/core/monitoring/budget.py#L73) | 已修正 |
+| **C-09** | 正確性 | `BudgetGuard.exhausted()` 只看 deadline，和它的註解、文件描述不符 | [budget.py:73](../src/core/monitoring/budget.py#L73) | 已修正（9749343） |
 | **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 未處理 |
 | **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 未處理 |
 | **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 未處理 |
@@ -195,7 +195,7 @@
 - C-07 預設 `warn` 而非 `strict`：展場的旗艦範例「推薦幾個適合我的展區」沒有提供 `RecommendExhibits` 必填的 `interests`，`strict` 會讓它無法規劃。
 
 
-### 2026-10-10：C-09
+### 2026-10-10：C-09（commit 9749343）
 
 `BudgetGuard.exhausted()` 是監測迴圈的結束條件，行為（只看 deadline）是對的，錯的是註解（寫成「replan 配額用完 + deadline 過了」）。若照註解把 replan 配額用完也算耗盡，最後一次 replan 一用掉配額迴圈就結束，剛換上的新步驟永遠不會執行（以突變測試確認：`max_replans=1` 的整合測試會失敗）。已修正註解，說明配額用完只代表不能再 replan / retry；並新增單元測試固定此語意（`tests/monitoring/test_budget.py`）。程式行為不變。
 
