@@ -7,6 +7,10 @@ IntentionalAgent 執行腳本：規劃意圖並透過 broker 實際 publish 至 
   python -m src.run_intentional_agent "介紹智慧導覽眼鏡，然後帶我去"
   set GIAS_INTENTION=帶我去洗手間 & python -m src.run_intentional_agent
 
+  # 常駐服務：經 MQTT intention.submit / intention.cancel / intention.query 接收意圖
+  #（介面見 docs/intention_protocol.md）
+  python -m src.run_intentional_agent --serve
+
 需先啟動 MQTT broker，且建議同時啟動 InfoAgent 與 NavigationAgent 以接收 publish。
 若要在同一終端機看到所有 Agent 的 log，請使用：python -m src.run_all "<意圖>"
 """
@@ -101,8 +105,16 @@ EXPO_PROFILE = DomainProfile(
 
 
 def main() -> None:
+    args = [a for a in sys.argv[1:] if a != "--serve"]
+    if "--serve" in sys.argv[1:]:
+        logger.info("IntentionalAgent 服務模式：經 MQTT intention.submit 接收意圖")
+        agent = IntentionalAgent(agent_config=get_agent_config(), domain_profile=EXPO_PROFILE)
+        agent.start_thread()
+        wait_agent(agent)
+        return
+
     intention = (
-        (sys.argv[1] if len(sys.argv) > 1 else None)
+        (args[0] if args else None)
         or os.environ.get("GIAS_INTENTION")
         or "帶我去A12攤位，並介紹智慧導覽眼鏡"
     )

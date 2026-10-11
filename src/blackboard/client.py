@@ -67,6 +67,22 @@ def query_blackboard(
     return try_query_blackboard(agent, cypher, params, timeout=timeout) or []
 
 
+def write_blackboard(
+    agent: "Agent",
+    cypher: str,
+    params: dict[str, Any] | None = None,
+    *,
+    timeout: float = 5.0,
+) -> bool:
+    """經由黑板代理寫入 Blackboard KG；成功回傳 True。"""
+    return _control(agent, {
+        "command": "write",
+        "cypher": cypher,
+        "params": params or {},
+        "requester_id": getattr(agent, "agent_id", "unknown"),
+    }, timeout=timeout) is not None
+
+
 def subscriber_topic(requester_id: str) -> str:
     """黑板代理把訂閱事件轉發到的 MQTT topic。"""
     return f"{BlackboardAgent.SUBSCRIBER_TOPIC_PREFIX}.{requester_id}"

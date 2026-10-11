@@ -9,6 +9,12 @@
 #   支援 cancel、retry、subtree replan、root replan、預算守門。
 # - 訂閱黑板變更事件並送進 ExecutionMonitor，trigger 依規則決定再思考。
 # - on_activate 預設走監測路徑；可透過 config 關閉退回舊路徑。
+#
+# 意圖管理（A-01）：
+# - 意圖是有生命週期的 Intention（src/core/intention），由 IntentionManager 依優先序排程，
+#   高優先序可搶占（被搶占的意圖之後重新規劃續做），可取消，狀態寫入 Blackboard 並發佈到 intention.status。
+# - 建構時給 intention：處理完這個意圖就結束（既有啟動腳本的行為）。
+#   不給 intention：常駐服務，經 MQTT intention.submit / intention.cancel / intention.query 接收意圖。
 
 from __future__ import annotations
 
@@ -40,6 +46,15 @@ from src.core.intent.prompt_builder import PromptBuilder
 from src.core.intent.llm_decomposer import LLMDecomposer
 from src.core.intent.planner import RecursivePlanner
 from src.core.intent.scope_gate import ScopeGate
+from src.core.intention import (
+    TOPIC_INTENTION_CANCEL,
+    TOPIC_INTENTION_QUERY,
+    TOPIC_INTENTION_STATUS,
+    TOPIC_INTENTION_SUBMIT,
+    BlackboardIntentionStore,
+    Intention,
+    IntentionManager,
+)
 from src.agents._executor_utils import (
     TOPIC_INFO_PROGRESS,
     TOPIC_INFO_RESULT,
@@ -50,6 +65,7 @@ from src.agents._executor_utils import (
     cancel_topic_for,
     is_missing_task,
     new_task_id,
+    parse_action_payload,
     resolve_request_topic,
     result_topic_for,
 )
@@ -75,6 +91,7 @@ from src.blackboard.client import (
     subscriber_topic,
     try_query_blackboard,
     unsubscribe_blackboard,
+    write_blackboard,
 )
 
 
@@ -82,9 +99,20 @@ from src.blackboard.client import (
 # IntentionalAgent
 # ----------------------------------------------------------------------
 class IntentionalAgent(Agent):
-    def __init__(self, agent_config, intention: str, *, domain_profile: DomainProfile | None = None):
+    def __init__(
+        self,
+        agent_config,
+        intention: str | None = None,
+        *,
+        domain_profile: DomainProfile | None = None,
+        exit_when_idle: bool | None = None,
+    ):
+        """intention：啟動時要處理的意圖；不給則作為常駐服務經 MQTT 接收意圖。
+        exit_when_idle：沒有待處理意圖時是否結束；預設「有給 intention 才結束」（既有啟動腳本的行為）。
+        """
         self.agent_config = agent_config
         self.intention = intention
+        self.exit_when_idle = bool(intention) if exit_when_idle is None else bool(exit_when_idle)
 
         # 完全使用 gias.toml（由 get_agent_config() 讀入的 agent_config）
         self.llm = LLMClient.from_config(agent_config)
@@ -124,6 +152,17 @@ class IntentionalAgent(Agent):
         self._monitor_lock_topics: set[str] = set()
         self._stop_event = threading.Event()
 
+        # ---- 意圖管理（A-01）--------------------------------------------
+        # 執行時派工用的 dispatcher（None 表示經 broker publish；測試可注入）
+        self.execution_dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None = None
+        self._completed_steps: dict[str, list[dict[str, Any]]] = {}
+        self.intentions = IntentionManager(
+            run_intention=self._run_intention,
+            on_status=self._publish_intention_status,
+            preemption=bool(self._intention_config().get("preemption", True)),
+            logger=logger,
+        )
+
         super().__init__("intentional_agent.gias", agent_config)
 
     @property
@@ -148,17 +187,125 @@ class IntentionalAgent(Agent):
     # Lifecycle
     # ------------------------------------------------------------------
     def on_activate(self):
-        plan = self.plan_intention(self.intention)
-        if plan.get("type") == "leaf_unresolved":
-            logger.warning("Abort: %s", plan.get("unmatched_sub_intentions"))
+        self._start_intention_service()
+        if self.intention:
+            self.intentions.submit(self.intention, requester="startup")
+        if self.exit_when_idle:
+            self.intentions.wait_idle()
+            for item in self.intentions.list():
+                logger.info("Intention %s finished: %s (%s)", item["intention_id"], item["status"], item["reason"])
             self._terminate()
-            return
-        if self._monitoring_enabled():
-            result = self.execute_plan_with_monitoring(plan)
-        else:
-            result = self.execute_plan(plan)
-        logger.info("Plan execution finished: ok=%s", result.get("ok", False))
-        self._terminate()
+
+    def on_terminating(self):
+        self.intentions.stop(reason="agent terminating")
+        store = self.intentions.store
+        if hasattr(store, "close"):
+            store.close()
+        super().on_terminating()
+
+    # ------------------------------------------------------------------
+    # 意圖管理（A-01）
+    # ------------------------------------------------------------------
+    def _intention_config(self) -> dict[str, Any]:
+        cfg = (self.agent_config or {}).get("intent") or {}
+        section = cfg.get("intentions") if isinstance(cfg, dict) else None
+        return section if isinstance(section, dict) else {}
+
+    def _start_intention_service(self) -> None:
+        """設定持久化、（常駐服務時）訂閱 MQTT 介面，並啟動排程。"""
+        cfg = self._intention_config()
+        if str(cfg.get("store", "blackboard")).lower() == "blackboard":
+            self.intentions.store = BlackboardIntentionStore(
+                self._write_blackboard, manager=str(cfg.get("manager_name", "intentional_agent")), logger=logger,
+            )
+            if not self.exit_when_idle:
+                # 只有常駐服務會在重啟時接手：上次未完成的意圖標為中斷，不自動續做
+                self.intentions.store.mark_unfinished_interrupted("unfinished when the service restarted")
+        if not self.exit_when_idle:
+            for topic, handler in (
+                (TOPIC_INTENTION_SUBMIT, self._handle_intention_submit),
+                (TOPIC_INTENTION_CANCEL, self._handle_intention_cancel),
+                (TOPIC_INTENTION_QUERY, self._handle_intention_query),
+            ):
+                try:
+                    self.subscribe(topic, "dict", handler)
+                except Exception as e:
+                    logger.warning("subscribe %s failed: %s", topic, e)
+        self.intentions.start()
+
+    def _run_intention(
+        self,
+        intention: Intention,
+        stop_event: threading.Event,
+        on_planned: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        """IntentionManager 的執行函式：規劃 → 承諾 → 以監測迴圈執行。"""
+        context = self._resume_context(intention) if intention.attempts > 1 else None
+        plan = self.plan_intention(intention.text, context=context)
+        if plan.get("type") == "leaf_unresolved":
+            return {"plan": plan, "summary": {"ok": False, "message": plan.get("reason")}}
+        if stop_event.is_set():
+            return {"plan": plan, "stopped": True}
+        on_planned(plan)
+        if not self._monitoring_enabled():
+            return {"plan": plan, "summary": self.execute_plan(plan)}
+        summary = self.execute_plan_with_monitoring(plan, dispatcher=self.execution_dispatcher, stop_event=stop_event)
+        done = [
+            {"id": r.get("id"), "task": r.get("task"), "intent": r.get("intent"), "state": "done"}
+            for r in summary.get("results") or [] if r.get("state") == "done"
+        ]
+        self._completed_steps.setdefault(intention.intention_id, []).extend(done)
+        return {"plan": plan, "summary": summary, "stopped": bool(summary.get("stopped"))}
+
+    def _resume_context(self, intention: Intention) -> dict[str, Any]:
+        """被搶占後續做：告訴規劃者已完成的步驟（不要重做）與目前環境。"""
+        context: dict[str, Any] = {"replan": {
+            "kind": "resume",
+            "reason": "resumed after being preempted by a higher-priority intention; "
+                      "the affected steps below were already completed and must not be repeated",
+            "affected_steps": list(self._completed_steps.get(intention.intention_id, [])),
+        }}
+        if self.domain.env_fact_queries:
+            facts = self._collect_env_facts()
+            if facts:
+                context["env_facts"] = facts
+        return context
+
+    def _publish_intention_status(self, status: dict[str, Any]) -> None:
+        try:
+            self.publish(TOPIC_INTENTION_STATUS, status)
+        except Exception as e:
+            logger.debug("publish %s failed: %s", TOPIC_INTENTION_STATUS, e)
+
+    def _write_blackboard(self, cypher: str, params: dict[str, Any]) -> bool:
+        return write_blackboard(self, cypher, params, timeout=self._bb_timeout())
+
+    def _handle_intention_submit(self, topic: str, pcl: Any) -> dict[str, Any]:
+        data = parse_action_payload(pcl)
+        try:
+            intention = self.intentions.submit(
+                str(data.get("text") or data.get("intention") or ""),
+                priority=int(data.get("priority", 0) or 0),
+                requester=str(data.get("requester") or ""),
+                intention_id=data.get("intention_id"),
+            )
+        except (TypeError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "intention_id": intention.intention_id, "status": intention.status.value}
+
+    def _handle_intention_cancel(self, topic: str, pcl: Any) -> dict[str, Any]:
+        data = parse_action_payload(pcl)
+        intention_id = str(data.get("intention_id") or "")
+        ok = self.intentions.cancel(intention_id, str(data.get("reason") or "cancelled by requester"))
+        return {"ok": ok, "intention_id": intention_id}
+
+    def _handle_intention_query(self, topic: str, pcl: Any) -> dict[str, Any]:
+        data = parse_action_payload(pcl)
+        intention_id = data.get("intention_id")
+        if intention_id:
+            found = self.intentions.get(str(intention_id))
+            return {"ok": found is not None, "intention": found}
+        return {"ok": True, "intentions": self.intentions.list(include_terminal=bool(data.get("include_terminal", True)))}
 
     def request_stop(self) -> None:
         """要求監測迴圈停止：取消所有執行中的動作後結束（可由其他 thread 呼叫）。"""
@@ -661,6 +808,7 @@ class IntentionalAgent(Agent):
         subtree_planner: Callable[[str, dict[str, Any] | None], dict[str, Any] | None] | None = None,
         root_planner: Callable[..., dict[str, Any] | None] | None = None,
         llm_decider: Callable[..., ReplanDecision] | None = None,
+        stop_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         """執行 plan 並啟用監測迴圈。
 
@@ -675,6 +823,7 @@ class IntentionalAgent(Agent):
             root_planner: 根層重生函式 (intent) 或 (intent, context) -> plan dict
             llm_decider: 自訂 LLM 判斷器（測試用）；不指定時使用 LLMReplanAdvisor，
                 是否啟用由 intent.monitoring.enable_llm_assist 決定
+            stop_event: 被設定時取消執行中的動作並結束（意圖被搶占或取消）；summary["stopped"] 為 True
         """
         if plan.get("type") == "leaf_unresolved":
             logger.warning("Plan unresolved, skip execution.")
@@ -718,10 +867,12 @@ class IntentionalAgent(Agent):
             # 3) 主迴圈
             loop_intent = plan.get("intent") or self.intention
             idle_polls = 0
+            stopped = False
             while not cursor.done() and not guard.exhausted():
-                if self._stop_event.is_set():
+                if self._stop_event.is_set() or (stop_event is not None and stop_event.is_set()):
                     logger.warning("Monitored execution stopped by request.")
                     self._cancel_in_flight(cursor, reason="stopped", dispatcher=dispatcher)
+                    stopped = True
                     break
 
                 # 3a) drain inbox
@@ -800,6 +951,7 @@ class IntentionalAgent(Agent):
 
         # 4) 收尾
         summary = cursor.summary()
+        summary["stopped"] = stopped
         summary["budget"] = guard.snapshot()
         summary["message"] = "執行完成。" if summary.get("ok") else "部分執行失敗或被中斷。"
         return summary
