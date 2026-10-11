@@ -90,7 +90,7 @@
 | **G-01** | 通用性 | 只寫死了 info、navigation 兩個頻道，未知 topic 一律送往 info | [_executor_utils.py:31](../src/agents/_executor_utils.py#L31) | 新增一種執行端 Agent 就要改核心程式 | 已修正（4e5ea49） |
 | **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 已修正（ca497df） |
 | **S-02** | 安全 | MQTT 用明文帳密，沒有 TLS 或 ACL | `gias.toml` | 訊息可被竊聽或偽造 | 已修正（c11bdc6；AgentFlow 端未 commit） |
-| **S-03** | 安全 | OpenAI API 金鑰以明文存在 `gias.toml`（已在 .gitignore、沒被 git 追蹤） | `gias.toml` | 本機或備份檔（`_bak/*.7z`）外流時金鑰會一起外洩 | 已修正 |
+| **S-03** | 安全 | OpenAI API 金鑰以明文存在 `gias.toml`（已在 .gitignore、沒被 git 追蹤） | `gias.toml` | 本機或備份檔（`_bak/*.7z`）外流時金鑰會一起外洩 | 已修正（f7f2251） |
 
 ## 四、低（11 項）
 
@@ -461,7 +461,7 @@ L-01 已讓 IntentionalAgent 依 `DomainProfile.env_subscriptions` 覆寫前綴�
 - 未在真實的 TLS broker 上連線測試
 - 所有元件共用一個服務帳號；依角色分帳號尚未實作
 
-### 2026-10-12：S-03
+### 2026-10-12：S-03（commit f7f2251）
 
 機密改由環境變數提供，設定檔只寫參照。說明見 [`docs/secrets.md`](secrets.md)。
 
