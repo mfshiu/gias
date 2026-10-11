@@ -1,5 +1,9 @@
 """Agent 共用：topic 常數、解析 payload、組裝請求/結果。
 
+Topic 命名慣例（見 docs/monitoring_protocol.md §1）：每個執行端 Agent 使用一個頻道 <channel>，
+訂閱 <channel>.request / <channel>.cancel，發佈 <channel>.result / <channel>.progress。
+Action KG 的 topic 寫 "<channel>.request"（或簡寫 "<channel>"）。新增執行端只要依這個慣例，不必修改核心程式。
+
 擴充支援監測 v1 protocol（見 docs/monitoring_protocol.md）：
 - task_id / idempotency_key / interruptible / side_effect / deadline_sec
 - info.result / navigation.result / info.cancel / navigation.cancel / info.progress / navigation.progress
@@ -27,59 +31,64 @@ TOPIC_NAVIGATION_CANCEL = "navigation.cancel"
 TOPIC_INFO_PROGRESS = "info.progress"
 TOPIC_NAVIGATION_PROGRESS = "navigation.progress"
 
-# request topic 對應的 channel base（result/cancel/progress 從這裡推導）
-_TOPIC_MAP = {
-    "info": TOPIC_INFO_REQUEST,
-    "navigation": TOPIC_NAVIGATION_REQUEST,
-}
-
-# 反查：從 channel 名 → 各 topic
-CHANNEL_TOPICS: dict[str, dict[str, str]] = {
-    "info": {
-        "request": TOPIC_INFO_REQUEST,
-        "result": TOPIC_INFO_RESULT,
-        "cancel": TOPIC_INFO_CANCEL,
-        "progress": TOPIC_INFO_PROGRESS,
-    },
-    "navigation": {
-        "request": TOPIC_NAVIGATION_REQUEST,
-        "result": TOPIC_NAVIGATION_RESULT,
-        "cancel": TOPIC_NAVIGATION_CANCEL,
-        "progress": TOPIC_NAVIGATION_PROGRESS,
-    },
-}
+TOPIC_KINDS = ("request", "result", "cancel", "progress")
 
 
-def resolve_request_topic(topic: str | None) -> str:
-    """將 topic 簡稱或 DB 值解析為實際的 request topic。"""
-    if not topic:
-        return TOPIC_INFO_REQUEST  # fallback
-    t = (topic or "").strip().lower()
-    if t in _TOPIC_MAP:
-        return _TOPIC_MAP[t]
-    if ".request" in t:
-        return topic.strip()
-    return TOPIC_INFO_REQUEST
+def channel_topics(channel: str) -> dict[str, str]:
+    """頻道的四個 topic：{"request": "<channel>.request", "result": ..., "cancel": ..., "progress": ...}。"""
+    return {kind: f"{channel}.{kind}" for kind in TOPIC_KINDS}
 
 
-def channel_of_request_topic(topic: str) -> str:
-    """從 request topic 推回 channel 名（info / navigation）。"""
-    t = (topic or "").strip().lower()
-    if t.startswith("navigation"):
-        return "navigation"
-    return "info"
+# 內建執行端（InfoAgent、NavigationAgent）的頻道
+CHANNEL_TOPICS: dict[str, dict[str, str]] = {name: channel_topics(name) for name in ("info", "navigation")}
 
 
-def result_topic_for(request_topic: str) -> str:
-    return CHANNEL_TOPICS[channel_of_request_topic(request_topic)]["result"]
+def _split_kind(topic: str) -> tuple[str, str | None]:
+    """'robot.arm.request' → ('robot.arm', 'request')；沒有 kind 後綴時 kind 為 None。"""
+    for kind in TOPIC_KINDS:
+        suffix = "." + kind
+        if topic.lower().endswith(suffix) and len(topic) > len(suffix):
+            return topic[: -len(suffix)], kind
+    return topic, None
 
 
-def cancel_topic_for(request_topic: str) -> str:
-    return CHANNEL_TOPICS[channel_of_request_topic(request_topic)]["cancel"]
+def resolve_request_topic(topic: str | None) -> str | None:
+    """Action KG 的 topic → 派工用的 request topic；無法判斷（空白）時回傳 None（不可派工）。
+
+    - "navigation.request"、"robot.arm.request"：原樣使用
+    - 簡寫 "navigation"、"Robot"：轉成小寫加上 ".request"
+    - 其他 kind（"navigation.result"）：換成同頻道的 request
+    """
+    t = (topic or "").strip()
+    if not t:
+        return None
+    base, kind = _split_kind(t)
+    if kind == "request":
+        return t
+    return f"{base.lower() if kind is None else base}.request"
 
 
-def progress_topic_for(request_topic: str) -> str:
-    return CHANNEL_TOPICS[channel_of_request_topic(request_topic)]["progress"]
+def channel_of_request_topic(topic: str | None) -> str | None:
+    """從 topic 推回頻道名（"navigation.request" → "navigation"）；空白時回傳 None。"""
+    request = resolve_request_topic(topic)
+    return _split_kind(request)[0] if request else None
+
+
+def _topic_for(request_topic: str | None, kind: str) -> str | None:
+    channel = channel_of_request_topic(request_topic)
+    return f"{channel}.{kind}" if channel else None
+
+
+def result_topic_for(request_topic: str | None) -> str | None:
+    return _topic_for(request_topic, "result")
+
+
+def cancel_topic_for(request_topic: str | None) -> str | None:
+    return _topic_for(request_topic, "cancel")
+
+
+def progress_topic_for(request_topic: str | None) -> str | None:
+    return _topic_for(request_topic, "progress")
 
 
 # ----------------------------------------------------------------------

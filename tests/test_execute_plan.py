@@ -41,8 +41,9 @@ def _minimal_agent_config() -> dict:
 # _executor_utils 單元測試
 # -------------------------
 def test_resolve_request_topic_empty():
-    assert resolve_request_topic(None) == TOPIC_INFO_REQUEST
-    assert resolve_request_topic("") == TOPIC_INFO_REQUEST
+    # G-01：不知道要送給哪個執行端時不派工（不再預設送往 info）
+    assert resolve_request_topic(None) is None
+    assert resolve_request_topic("") is None
 
 
 def test_resolve_request_topic_short_form():
@@ -58,8 +59,11 @@ def test_resolve_request_topic_full_form():
     assert resolve_request_topic("Info.Request") == "Info.Request"
 
 
-def test_resolve_request_topic_unknown_fallback():
-    assert resolve_request_topic("unknown") == TOPIC_INFO_REQUEST
+def test_resolve_request_topic_other_channels():
+    # G-01：未知頻道依命名慣例送往 <channel>.request，不再一律送往 info
+    assert resolve_request_topic("robot") == "robot.request"
+    assert resolve_request_topic("robot.arm.request") == "robot.arm.request"
+    assert resolve_request_topic("robot.result") == "robot.request"
 
 
 def test_build_action_payload():
@@ -388,8 +392,8 @@ def test_execute_plan_publish_failure(mock_adapter_cls):
 
 
 @patch("src.core.intentional_agent.Neo4jBoltAdapter")
-def test_execute_plan_topic_fallback_when_empty(mock_adapter_cls):
-    """topic 為空時 fallback 至 info.request。"""
+def test_execute_plan_does_not_dispatch_without_topic(mock_adapter_cls):
+    """G-01：topic 為空時不知道要送給哪個執行端：不送出、回報失敗（不再預設送往 info.request）。"""
     mock_adapter_cls.from_config.return_value = MagicMock()
     agent_config = _minimal_agent_config()
     agent = IntentionalAgent(agent_config=agent_config, intention="test")
@@ -419,9 +423,9 @@ def test_execute_plan_topic_fallback_when_empty(mock_adapter_cls):
     with patch.object(agent, "publish_sync", MagicMock(return_value=mock_resp)) as mock_sync:
         result = agent.execute_plan(plan)
 
-    assert result["ok"] is True
-    mock_sync.assert_called_once()
-    assert mock_sync.call_args[0][0] == TOPIC_INFO_REQUEST
+    assert result["ok"] is False
+    mock_sync.assert_not_called()
+    assert result["results"][0]["result"]["error"] == "node has no topic; not dispatched"
 
 
 @patch("src.core.intentional_agent.Neo4jBoltAdapter")

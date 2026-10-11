@@ -12,6 +12,24 @@
 
 ## 1. Topic 命名
 
+每個執行端 Agent 使用一個頻道 `<channel>`（例：`info`、`navigation`，也可以是 `robot.arm` 這種含點的名稱）：
+
+| Topic | 方向 | 用途 |
+|-------|------|------|
+| `<channel>.request` | IntentionalAgent → 執行端 | 派工 |
+| `<channel>.result` | 執行端 → IntentionalAgent | 任務結果 |
+| `<channel>.cancel` | IntentionalAgent → 執行端 | 取消指令 |
+| `<channel>.progress` | 執行端 → IntentionalAgent | 進度回報（選用） |
+
+Action KG 的 `topic` 寫 `<channel>.request`，或簡寫 `<channel>`（轉成小寫後加上 `.request`）。IntentionalAgent 依計畫中
+出現的頻道訂閱 `<channel>.result` / `<channel>.progress`（重規劃換上新頻道時，派工前再訂閱），取消送往 `<channel>.cancel`。
+`topic` 空白的步驟無法派工，規劃時即被拒絕（不再預設送往 `info.request`）。
+
+**新增一種執行端**：選一個頻道名，執行端訂閱 `<channel>.request` / `<channel>.cancel`、發佈 `<channel>.result`（與選用的
+`<channel>.progress`），payload 依 §2～§5；在 Action KG 的 Action 上設定 `topic = "<channel>.request"`。不必修改核心程式。
+
+目前的頻道：
+
 | Topic | 方向 | 用途 |
 |-------|------|------|
 | `info.request` | IntentionalAgent → InfoAgent | 派工（既有） |

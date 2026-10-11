@@ -59,13 +59,10 @@ from src.core.intention import (
 )
 from src.core.intention.response import ResponseComposer
 from src.agents._executor_utils import (
-    TOPIC_INFO_PROGRESS,
-    TOPIC_INFO_RESULT,
-    TOPIC_NAVIGATION_PROGRESS,
-    TOPIC_NAVIGATION_RESULT,
     build_action_payload,
     build_cancel_payload,
     cancel_topic_for,
+    channel_of_request_topic,
     is_missing_task,
     new_task_id,
     parse_action_payload,
@@ -165,7 +162,8 @@ class IntentionalAgent(Agent):
 
         # ---- 監測子系統（v2）-----------------------------------------
         self._monitor: ExecutionMonitor | None = None
-        self._result_subs_active: bool = False
+        # 已訂閱 <channel>.result / <channel>.progress 的執行端頻道
+        self._result_channels: set[str] = set()
         self._bb_subs_active: bool = False
         self._monitor_lock_topics: set[str] = set()
         self._stop_event = threading.Event()
@@ -834,6 +832,9 @@ class IntentionalAgent(Agent):
             if node.get("type") == "atomic" or node.get("is_atomic") is True:
                 if is_missing_task(node.get("task")):
                     found.append({**info, "action": node.get("action", ""), "reason": "no_bound_task"})
+                elif resolve_request_topic(node.get("topic")) is None:
+                    # 不知道要送給哪個執行端（不再預設送往 info）
+                    found.append({**info, "action": node.get("action", ""), "reason": "no_topic"})
                 return
             children = [c for c in (node.get("sub_plans") or []) if isinstance(c, dict)]
             if not children:
@@ -902,6 +903,9 @@ class IntentionalAgent(Agent):
             return {"ok": False, "result": {"error": "node has no bound task; not dispatched"}}
 
         topic_name = resolve_request_topic(topic)
+        if topic_name is None:
+            logger.warning("Dispatch skipped: node=%s has no topic", node.get("id"))
+            return {"ok": False, "result": {"error": "node has no topic; not dispatched"}}
         payload = build_action_payload(task=task, params=params, action_id=action_id, intent=intent)
 
         try:
@@ -1060,7 +1064,7 @@ class IntentionalAgent(Agent):
         )
 
         # 2) 確保訂閱 result topics 與黑板環境事件（若 broker 已連線）
-        self._ensure_result_subscriptions()
+        self._ensure_result_subscriptions(self._plan_channels(plan))
         self._ensure_env_subscriptions()
 
         try:
@@ -1266,25 +1270,42 @@ class IntentionalAgent(Agent):
             facts["_unavailable"] = unavailable
         return facts
 
-    def _ensure_result_subscriptions(self) -> None:
-        """訂閱 info.result / navigation.result 與 *.progress（執行端的調整回報）；可重入。
+    @staticmethod
+    def _plan_channels(plan: dict[str, Any]) -> list[str]:
+        """計畫中 atomic 節點會派工到的執行端頻道（依出現順序、不重複）。"""
+        channels: list[str] = []
 
+        def walk(node: Any) -> None:
+            if not isinstance(node, dict):
+                return
+            if node.get("type") == "atomic" or node.get("is_atomic") is True:
+                channel = channel_of_request_topic(node.get("topic"))
+                if channel and channel not in channels:
+                    channels.append(channel)
+                return
+            for child in node.get("sub_plans") or []:
+                walk(child)
+
+        walk(plan)
+        return channels
+
+    def _ensure_result_subscriptions(self, channels) -> None:
+        """訂閱各執行端頻道的 <channel>.result 與 <channel>.progress；每個頻道只訂閱一次。
+
+        頻道由計畫中的 topic 決定，新增執行端不必修改這裡。
         broker 尚未連線時（例如測試環境）會吞下例外，由 dispatcher 直接餵 monitor。
         """
-        if self._result_subs_active:
-            return
         monitor = self._ensure_monitor()
-        for t in (TOPIC_INFO_RESULT, TOPIC_NAVIGATION_RESULT):
-            try:
-                self.subscribe(t, "dict", monitor.on_action_result)
-            except Exception as e:
-                logger.debug("subscribe %s failed: %s", t, e)
-        for t in (TOPIC_INFO_PROGRESS, TOPIC_NAVIGATION_PROGRESS):
-            try:
-                self.subscribe(t, "dict", monitor.on_progress)
-            except Exception as e:
-                logger.debug("subscribe %s failed: %s", t, e)
-        self._result_subs_active = True
+        for channel in channels:
+            if not channel or channel in self._result_channels:
+                continue
+            self._result_channels.add(channel)
+            for kind, handler in (("result", monitor.on_action_result), ("progress", monitor.on_progress)):
+                topic = f"{channel}.{kind}"
+                try:
+                    self.subscribe(topic, "dict", handler)
+                except Exception as e:
+                    logger.debug("subscribe %s failed: %s", topic, e)
 
     def _dispatch_atomic(
         self,
@@ -1312,8 +1333,13 @@ class IntentionalAgent(Agent):
                 "task_id": task_id, "ok": False, "error": failure, "task": node.get("task"),
             })
             return
-        topic_raw = node.get("topic")
-        topic_name = resolve_request_topic(topic_raw)
+        topic_name = resolve_request_topic(node.get("topic"))
+        if topic_name is None:
+            logger.warning("Dispatch skipped: node=%s has no topic", rec.node_id)
+            cursor.mark_failed(rec.node_id, "node has no topic; not dispatched")
+            return
+        # 重規劃換上的子樹可能用到新的執行端：派工前先訂閱它的結果與進度
+        self._ensure_result_subscriptions([channel_of_request_topic(topic_name)])
         task_id = new_task_id(prefix=str(rec.node_id))
         cursor.mark_dispatched(rec.node_id, task_id=task_id)
         monitor.bind_task(task_id, rec.node_id)
@@ -1438,8 +1464,10 @@ class IntentionalAgent(Agent):
         reason: str,
         dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None,
     ) -> None:
-        topic_name = resolve_request_topic(rec.node.get("topic"))
-        cancel_topic = cancel_topic_for(topic_name)
+        cancel_topic = cancel_topic_for(rec.node.get("topic"))
+        if cancel_topic is None:
+            logger.warning("Cancel skipped: node=%s has no topic", rec.node_id)
+            return
         payload = build_cancel_payload(task_id=rec.task_id or "", reason=reason)
         try:
             if dispatcher is not None:
