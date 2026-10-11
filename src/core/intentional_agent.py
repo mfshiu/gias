@@ -155,6 +155,8 @@ class IntentionalAgent(Agent):
             action_store=self.action_store,
             enum_alias=self.domain.enum_alias,
             cache_ttl_sec=cache_ttl,
+            # 彼此沒有先後的非原子子意圖平行拆解；同時最多這麼多個 LLM 呼叫
+            max_parallel=int((agent_config.get("intent") or {}).get("planner_max_parallel", 4)),
         )
         self.scope_gate = ScopeGate(llm=self.llm, logger=logger)
         # 意圖結束時給使用者的回覆（[intent.response] mode：llm / template / off）

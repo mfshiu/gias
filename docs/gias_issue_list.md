@@ -99,7 +99,7 @@
 | **L-05** | 閉環／監測 | 進度訊息只寫進 log，沒有用在監測判斷 | [monitor.py:84](../src/core/monitoring/monitor.py#L84) | 已修正（165b73b） |
 | **C-09** | 正確性 | `BudgetGuard.exhausted()` 只看 deadline，和它的註解、文件描述不符 | [budget.py:73](../src/core/monitoring/budget.py#L73) | 已修正（9749343） |
 | **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 已修正（877f6be） |
-| **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 未處理 |
+| **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 已修正 |
 | **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 未處理 |
 | **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 未處理 |
 | **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 未處理 |
@@ -370,6 +370,20 @@ BlackboardAgent 預設仍把每個變動廣播到 `blackboard.event.*`（`[black
 新增測試 6 個（`tests/llm/test_embedding_cache.py`），並以突變測試確認 8 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 953 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 **仍未涵蓋**：快取只在記憶體中，process 結束即消失；若校準工具或 benchmark 需要跨次執行重用，可再加上寫入檔案的快取。
+
+### 2026-10-12：P-05
+
+| 項目 | 修正前 | 修正後 |
+|---|---|---|
+| 固定延遲 | 每個非原子子意圖拆解前 `sleep(0.1)` | 移除 |
+| 處理順序 | 子意圖逐一處理 | 原子子意圖（不需要 LLM）先建好；非原子的依 Sequence 先後分批，同一批彼此沒有先後，以 thread pool 平行拆解。結果仍依拆解時的順序排列 |
+| 呼叫上限 | — | `[intent] planner_max_parallel`（預設 4，1 表示逐一處理）：整個 planner 同時進行的 LLM 拆解呼叫上限，巢狀平行時也共用這個上限 |
+
+步驟之間的資料傳遞（A-03）配合調整：子意圖拆解時可引用的前面步驟，改為「已建好、且不排在它之後的兄弟步驟」：原子兄弟步驟一定看得到（不論在清單中的位置）；同一批平行拆解的非原子兄弟彼此看不到，後面批次看得到前面批次的子樹（`docs/step_dataflow.md` 已更新）。需要前一步結果的子意圖，LLM 應依規則加上 Sequence，就會排在後面的批次。
+
+新增測試 7 個（`tests/intent/test_planner_parallel.py`，含平行、上限、先後、巢狀上限、結果順序、不再 sleep、錯誤傳遞），連續重跑 5 次皆通過，並以突變測試確認 6 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 960 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+**注意**：尚未以真實 LLM 測量實際縮短的規劃時間；平行呼叫可能觸及 LLM 供應商的速率限制，必要時調低 `planner_max_parallel`。
 
 ---
 

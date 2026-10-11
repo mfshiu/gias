@@ -57,7 +57,8 @@ atomic 子意圖需要前面步驟的結果時，不猜值，改寫在 `inputs`�
 
 - `output`：輸出名稱，可加索引或欄位（`booths[0]`、`route.path`），或 `message`
 - `from_id`：同一層的子意圖 id；下層拆解時可用 `"@<id>"` 引用前面步驟（prompt 的「Results Available from Earlier Steps」段落會列出：
-  已規劃、且不排在這部分之後的兄弟步驟與其子孫）
+  已建好、且不排在這部分之後的兄弟步驟與其子孫。原子步驟一定先建好；非原子的子意圖依先後分批平行拆解，
+  所以同一批彼此看不到，後面批次看得到前面批次的子樹）
 
 planner 把它轉成節點上的 `inputs: [{"param", "from", "output"}]`（`from` 為計畫中的節點 id），並：
 

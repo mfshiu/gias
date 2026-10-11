@@ -1,5 +1,6 @@
 import copy
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from src.kg.cache import TTLCache
 
@@ -93,7 +94,9 @@ def _parse_inputs(raw, id_map: dict[str, str], schema: list[dict]) -> tuple[list
 
 
 class RecursivePlanner:
-    def __init__(self, *, decomposer, logger, kg=None, action_store=None, enum_alias=None, cache_ttl_sec=300.0):
+    def __init__(self, *, decomposer, logger, kg=None, action_store=None, enum_alias=None, cache_ttl_sec=300.0,
+                 max_parallel=4):
+        """max_parallel：同時進行的 LLM 拆解呼叫上限；彼此沒有先後的非原子子意圖會平行拆解（1 表示逐一處理）。"""
         self.decomposer = decomposer
         self.logger = logger
         self.kg = kg
@@ -102,6 +105,15 @@ class RecursivePlanner:
         self.enum_alias = enum_alias or {}
         # 同一個 Action 在多個步驟、多次重規劃中重複出現：metadata 與 Agent 查詢結果快取起來
         self._cache = TTLCache(cache_ttl_sec)
+        self.max_parallel = max(1, int(max_parallel))
+        self._llm_slots = threading.BoundedSemaphore(self.max_parallel)
+
+    def _decompose_call(self, intent, available_actions, context=None):
+        """呼叫 LLM 拆解；整個 planner 同時最多 max_parallel 個呼叫（巢狀平行時也一樣）。"""
+        with self._llm_slots:
+            if context:
+                return self.decomposer.decompose(intent, available_actions, context=context)
+            return self.decomposer.decompose(intent, available_actions)
 
     def _get_action_metadata(self, action_name: str) -> dict | None:
         """
@@ -185,7 +197,7 @@ class RecursivePlanner:
         self.logger.warning("Decomposition changed the given sub-intents (missing %s, extra %s); asking again",
                             missing, extra)
         retry_context = {**call_context, "given_sub_intents_feedback": {"missing": missing, "extra": extra}}
-        retry = self.decomposer.decompose(intent, available_actions, context=retry_context)
+        retry = self._decompose_call(intent, available_actions, retry_context)
         if retry:
             result_json = retry
             missing, extra = diff(result_json)
@@ -270,10 +282,7 @@ class RecursivePlanner:
         if given_sub_intents:
             extra["given_sub_intents"] = given_sub_intents
         call_context = {**(context or {}), **extra} if extra else context
-        if call_context:
-            result_json = self.decomposer.decompose(intent, available_actions, context=call_context)
-        else:
-            result_json = self.decomposer.decompose(intent, available_actions)
+        result_json = self._decompose_call(intent, available_actions, call_context)
         if not result_json:
             current_node["error"] = "Decomposition failed"
             return current_node
@@ -301,80 +310,131 @@ class RecursivePlanner:
         current_node["execution_logic"] = _remap_relationships(result_json.get("relationships", []), id_map)
         runs_after = _successors(child_ids, current_node["execution_logic"])
 
+        # 原子子意圖不需要 LLM，先建好；非原子的依先後關係分批規劃，同一批平行處理
+        built: dict[str, dict] = {}
+        composites: list[tuple[dict, str]] = []
         for sub, sub_id in zip(sub_intents, child_ids):
-            child_intent = sub.get("intent", "")
-            action = sub.get("action", "")
-            is_atomic = sub.get("is_atomic", False)
-            source = sub.get("atomic_source")
-            sched_time = sub.get("scheduled_start", "")
-
-            if is_atomic:
-                marker = "🟢 [EXEC]" if source == "pre_defined" else "🔴 [NEW]"
-                print(f"{indent}    [{sched_time}] {marker} {child_intent} (Type: {source})")
-
-                action_name = _extract_action_name(action)
-                agent_info = self._get_agent_by_action(action_name) if action_name else None
-                action_meta = self._get_action_metadata(action_name) if action_name else None
-                raw_params = parse_action_call(action) if action else {}
-
-                atomic_node = {
-                    "id": sub_id,
-                    "intent": child_intent,
-                    "action": action,
-                    "depth": depth + 1,
-                    "scheduled_start": sched_time,
-                    "type": "atomic",
-                    "is_atomic": True,
-                    "atomic_source": source,
-                    "sub_plans": [],
-                }
-                if agent_info:
-                    atomic_node["agent"] = agent_info
-                if action_meta:
-                    atomic_node["topic"] = action_meta.get("topic")
-                    atomic_node["task"] = action_meta.get("task")
-                    atomic_node["action_id"] = action_meta.get("action_id")
-                    schema = atomic_node["params_schema"] = action_meta.get("params_schema", [])
-                    if action_meta.get("preconditions"):
-                        atomic_node["preconditions"] = action_meta["preconditions"]
-                    if action_meta.get("effects"):
-                        atomic_node["effects"] = action_meta["effects"]
-                    if action_meta.get("outputs"):
-                        atomic_node["outputs"] = action_meta["outputs"]
-                    # 接前面步驟輸出的參數：派工時才代入，這裡不取 action 字串中的值
-                    inputs, input_issues = _parse_inputs(sub.get("inputs"), id_map, schema)
-                    bound = {i["param"] for i in inputs}
-                    if inputs:
-                        atomic_node["inputs"] = inputs
-                        raw_params = {k: v for k, v in raw_params.items() if match_param_key(k, schema)[0] not in bound}
-                    # 依 schema 對應名稱、轉型別、檢查 enum 與必填；問題記在 param_issues
-                    params, issues = normalize_params(raw_params, schema, self.enum_alias)
-                    issues = [i for i in issues if not (i["issue"] == "missing_required" and i["param"] in bound)]
-                    issues += input_issues
-                    atomic_node["params"] = params
-                    if issues:
-                        atomic_node["param_issues"] = issues
-
-                current_node["sub_plans"].append(atomic_node)
+            if sub.get("is_atomic", False):
+                built[sub_id] = self._build_atomic(sub, sub_id, depth, id_map)
             else:
-                time.sleep(0.1)
-                # 已規劃、且不排在這個子意圖之後的兄弟步驟，其輸出可被子意圖內的步驟引用
+                composites.append((sub, sub_id))
+        if composites:
+            self._plan_composites(
+                composites, built, child_ids, runs_after, available_actions,
+                depth=depth, max_depth=max_depth, context=context, upstream=upstream,
+            )
+        current_node["sub_plans"] = [built[i] for i in child_ids if built.get(i)]
+        return current_node
+
+    def _build_atomic(self, sub: dict, sub_id: str, depth: int, id_map: dict[str, str]) -> dict:
+        indent = "    " * depth
+        child_intent = sub.get("intent", "")
+        action = sub.get("action", "")
+        source = sub.get("atomic_source")
+        sched_time = sub.get("scheduled_start", "")
+        marker = "🟢 [EXEC]" if source == "pre_defined" else "🔴 [NEW]"
+        print(f"{indent}    [{sched_time}] {marker} {child_intent} (Type: {source})")
+
+        action_name = _extract_action_name(action)
+        agent_info = self._get_agent_by_action(action_name) if action_name else None
+        action_meta = self._get_action_metadata(action_name) if action_name else None
+        raw_params = parse_action_call(action) if action else {}
+
+        atomic_node = {
+            "id": sub_id,
+            "intent": child_intent,
+            "action": action,
+            "depth": depth + 1,
+            "scheduled_start": sched_time,
+            "type": "atomic",
+            "is_atomic": True,
+            "atomic_source": source,
+            "sub_plans": [],
+        }
+        if agent_info:
+            atomic_node["agent"] = agent_info
+        if action_meta:
+            atomic_node["topic"] = action_meta.get("topic")
+            atomic_node["task"] = action_meta.get("task")
+            atomic_node["action_id"] = action_meta.get("action_id")
+            schema = atomic_node["params_schema"] = action_meta.get("params_schema", [])
+            if action_meta.get("preconditions"):
+                atomic_node["preconditions"] = action_meta["preconditions"]
+            if action_meta.get("effects"):
+                atomic_node["effects"] = action_meta["effects"]
+            if action_meta.get("outputs"):
+                atomic_node["outputs"] = action_meta["outputs"]
+            # 接前面步驟輸出的參數：派工時才代入，這裡不取 action 字串中的值
+            inputs, input_issues = _parse_inputs(sub.get("inputs"), id_map, schema)
+            bound = {i["param"] for i in inputs}
+            if inputs:
+                atomic_node["inputs"] = inputs
+                raw_params = {k: v for k, v in raw_params.items() if match_param_key(k, schema)[0] not in bound}
+            # 依 schema 對應名稱、轉型別、檢查 enum 與必填；問題記在 param_issues
+            params, issues = normalize_params(raw_params, schema, self.enum_alias)
+            issues = [i for i in issues if not (i["issue"] == "missing_required" and i["param"] in bound)]
+            issues += input_issues
+            atomic_node["params"] = params
+            if issues:
+                atomic_node["param_issues"] = issues
+
+        return atomic_node
+
+    def _plan_composites(
+        self,
+        composites: list[tuple[dict, str]],
+        built: dict[str, dict],
+        child_ids: list[str],
+        runs_after: dict[str, set[str]],
+        available_actions,
+        *,
+        depth: int,
+        max_depth: int,
+        context,
+        upstream,
+    ) -> None:
+        """依先後關係分批規劃非原子的子意圖；同一批彼此沒有先後，平行規劃（最多 max_parallel 個）。
+
+        每個子意圖可引用的前面步驟：已建好、且不排在它之後的兄弟步驟（含前幾批規劃出的子樹）。
+        """
+        pending = list(composites)
+        while pending:
+            pending_ids = [sid for _, sid in pending]
+            wave = [
+                (sub, sid) for sub, sid in pending
+                if not any(sid in runs_after.get(other, set()) for other in pending_ids if other != sid)
+            ]
+            if not wave:
+                # 依賴循環：照清單順序先規劃一個（plan_intention 會拒絕有循環的計畫）
+                wave = pending[:1]
+            jobs = []
+            for sub, sid in wave:
                 available = list(upstream or []) + [
-                    src for prev in current_node["sub_plans"]
-                    if str(prev.get("id")) not in runs_after.get(sub_id, set())
-                    for src in _output_sources(prev)
+                    src for cid in child_ids
+                    if cid in built and cid not in runs_after.get(sid, set())
+                    for src in _output_sources(built[cid])
                 ]
-                child_tree = self.plan(
-                    child_intent,
+                jobs.append((sub, sid, available))
+
+            def run(job):
+                sub, sid, available = job
+                return sid, self.plan(
+                    sub.get("intent", ""),
                     available_actions,
                     depth=depth + 1,
                     max_depth=max_depth,
-                    scheduled_start=sched_time,
-                    node_id=sub_id,
+                    scheduled_start=sub.get("scheduled_start", ""),
+                    node_id=sid,
                     context=context,
                     upstream=available,
                 )
-                if child_tree:
-                    current_node["sub_plans"].append(child_tree)
 
-        return current_node
+            if len(jobs) > 1 and self.max_parallel > 1:
+                with ThreadPoolExecutor(max_workers=min(len(jobs), self.max_parallel)) as pool:
+                    results = list(pool.map(run, jobs))
+            else:
+                results = [run(job) for job in jobs]
+            for sid, tree in results:
+                built[sid] = tree
+            done = {sid for _, sid in wave}
+            pending = [(sub, sid) for sub, sid in pending if sid not in done]
