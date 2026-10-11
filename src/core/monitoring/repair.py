@@ -22,7 +22,7 @@ import logging
 import uuid
 from typing import Any, Callable
 
-from .events import ReplanDecision, TriggerKind
+from .events import NodeState, ReplanDecision, TriggerKind
 from .cursor import DuplicateNodeIdError, PlanCursor
 
 
@@ -235,6 +235,14 @@ class PlanRepair:
         context: dict[str, Any] = {
             "replan": {"kind": decision.kind.value, "reason": decision.reason, "affected_steps": affected},
         }
+        # 已完成步驟的結果：新計畫可以直接使用，不必重做
+        affected_ids = set(decision.affected_node_ids)
+        completed = [
+            completed_step(rec) for rec in sorted(cursor.all_records(), key=lambda r: r.finished_at or 0)
+            if rec.state == NodeState.DONE and rec.node_id not in affected_ids
+        ]
+        if completed:
+            context["completed_steps"] = completed
         if self.env_facts_provider is not None:
             try:
                 facts = self.env_facts_provider()
@@ -259,6 +267,22 @@ def _accepts_context(callback: Callable[..., Any]) -> bool:
         return True
     positional = [p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
     return len(positional) >= 2
+
+
+def completed_step(rec) -> dict[str, Any]:
+    """已完成步驟與其結果（文字回覆、輸出），給重規劃脈絡使用。"""
+    from src.core.intent.dataflow import step_outputs   # 延後 import，避免循環相依
+
+    payload = rec.last_result or {}
+    return {
+        "id": rec.node_id,
+        "intent": rec.node.get("intent", ""),
+        "task": rec.node.get("task"),
+        "params": rec.node.get("params") or {},
+        "state": rec.state.value,
+        "message": payload.get("message") or "",
+        "outputs": step_outputs(payload),
+    }
 
 
 def _affected_parent_id(decision: ReplanDecision, cursor: PlanCursor) -> str | None:
@@ -288,5 +312,10 @@ def _renumber_ids_in_subtree(node: dict[str, Any], *, prefix: str) -> None:
                 v = rel.get(k)
                 if isinstance(v, str) and v and not v.startswith(prefix):
                     rel[k] = f"{prefix}-{v}"
+    # 同步 inputs 的來源 id（inputs 只引用同一份新計畫中的步驟）
+    for spec in node.get("inputs") or []:
+        v = spec.get("from") if isinstance(spec, dict) else None
+        if isinstance(v, str) and v and not v.startswith(prefix):
+            spec["from"] = f"{prefix}-{v}"
     for child in node.get("sub_plans") or []:
         _renumber_ids_in_subtree(child, prefix=prefix)

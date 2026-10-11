@@ -156,5 +156,5 @@ def test_no_adaptation_when_crowd_unchanged(fast_nav_env):
         result = agent._handle("navigation.request", _FakeParcel({
             "task": "LocateExhibit", "params": {"target_name": "A12"}, "task_id": "NT-same",
         }))
-    assert "result" not in result
+    assert result["result"] == {"current_location": "A12"}      # 只有輸出，沒有調整記錄
     assert _publish_calls_to(mock_pub, TOPIC_NAVIGATION_PROGRESS) == []

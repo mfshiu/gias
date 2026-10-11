@@ -108,10 +108,11 @@ def _execute_with_replan(
     step_delay: float = 0.8,
     cancel_token: CancelToken | None = None,
     adaptations: AdaptationLog | None = None,
+    outputs: dict[str, Any] | None = None,
 ) -> tuple[str, bool]:
     """導航執行：過程中多次查詢黑板；可被 cancel_token 中斷。
 
-    人潮在途中改變而改走其他路線時，經 adaptations 回報意圖層。
+    人潮在途中改變而改走其他路線時，經 adaptations 回報意圖層。抵達後的位置寫進 outputs。
     """
     loc = params.get("current_location", "?")
     target = params.get("target_name") or params.get("destination", "?")
@@ -179,6 +180,8 @@ def _execute_with_replan(
             return (msg, True)
     elif crowded_2:
         msg += f" 【黑板觀察】途經區域 {', '.join(crowded_2)} 擁擠，已繞行。"
+    if outputs is not None:
+        outputs["current_location"] = dest_label
     return (msg, False)
 
 
@@ -195,8 +198,9 @@ def _execute(
     *,
     cancel_token: CancelToken | None = None,
     adaptations: AdaptationLog | None = None,
+    outputs: dict[str, Any] | None = None,
 ) -> tuple[str, bool]:
-    """執行導航類 task；回傳 (message, cancelled)。
+    """執行導航類 task；回傳 (message, cancelled)，輸出寫進 outputs。
 
     NOTE: 為避免單元測試耗時過長，預設縮短 en_route_sec。
     """
@@ -232,7 +236,15 @@ def _execute(
             return ("SuggestRoute 已取消。", True)
         hotspots_2 = get_crowd_hotspots(agent)
         crowded_2 = sorted(_crowded_zones_from_hotspots(hotspots_2))
-        msg = f"已根據您的位置 {loc} 規劃建議參觀路線。"
+        waypoints = params.get("waypoints") or []
+        if isinstance(waypoints, str):
+            waypoints = [w.strip() for w in waypoints.split(",") if w.strip()]
+        if waypoints:
+            msg = f"已根據您的位置 {loc} 規劃建議參觀路線，依序經過 {'、'.join(map(str, waypoints))}。"
+            if outputs is not None:
+                outputs["waypoints"] = list(waypoints)
+        else:
+            msg = f"已根據您的位置 {loc} 規劃建議參觀路線。"
         if crowded_1 != crowded_2:
             print("  [NavigationAgent] >>> 【路線變更】人潮已有變化！", flush=True)
             _report_crowd_reroute(adaptations, crowded_1, crowded_2)
@@ -253,6 +265,7 @@ def _execute(
             step_delay=0.8,
             cancel_token=cancel_token,
             adaptations=adaptations,
+            outputs=outputs,
         )
 
     if task == "ExplainDirections":
@@ -287,12 +300,21 @@ def _execute(
             step_delay=0.8,
             cancel_token=cancel_token,
             adaptations=adaptations,
+            outputs=outputs,
         )
 
     ok = _simulate_progress(["處理中...", "完成"], cancel_token=cancel_token)
     if not ok:
         return (f"{task} 已取消。", True)
     return (f"已執行導航任務 {task}。", False)
+
+
+def _result_payload(outputs: dict[str, Any], adaptation_items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """結果的 result 欄位：task 的輸出，加上執行中自行做的調整。"""
+    payload = dict(outputs)
+    if adaptation_items:
+        payload["adaptations"] = adaptation_items
+    return payload or None
 
 
 class NavigationAgent(Agent):
@@ -366,9 +388,10 @@ class NavigationAgent(Agent):
         t0 = time.time()
         cancelled = False
         adaptations = AdaptationLog(task_id, publish=self._publish_progress_payload)
+        outputs: dict[str, Any] = {}
         try:
             message, cancelled = self.execute_task(
-                task, params, cancel_token=token, task_id=task_id, adaptations=adaptations,
+                task, params, cancel_token=token, task_id=task_id, adaptations=adaptations, outputs=outputs,
             )
         except Exception as e:
             logger.exception("NavigationAgent execute failed: %s", e)
@@ -407,7 +430,7 @@ class NavigationAgent(Agent):
             started_at=started_at,
             finished_at=finished_at,
             elapsed_sec=elapsed,
-            result={"adaptations": adaptations.items} if adaptations.items else None,
+            result=_result_payload(outputs if ok else {}, adaptations.items),
         )
 
         if idempotency_key and ok:
@@ -425,13 +448,15 @@ class NavigationAgent(Agent):
         cancel_token: CancelToken | None = None,
         task_id: str | None = None,
         adaptations: AdaptationLog | None = None,
+        outputs: dict[str, Any] | None = None,
     ) -> tuple[str, bool]:
         """執行單一 task，回傳 (message, cancelled)；失敗時拋出例外。
 
-        執行中自行做的調整（改路線、放寬限制）以 adaptations.report() 回報意圖層。
+        執行中自行做的調整（改路線、放寬限制）以 adaptations.report() 回報意圖層；
+        task 的輸出（Action KG 的 Output，例如抵達後的位置）寫進 outputs，附在結果的 result 欄位。
         子類別可覆寫以提供實際的導航行為（例：navigation_scenario.live.GuideAgent）。
         """
-        return _execute(self, task, params, cancel_token=cancel_token, adaptations=adaptations)
+        return _execute(self, task, params, cancel_token=cancel_token, adaptations=adaptations, outputs=outputs)
 
     def _handle_cancel(self, topic: str, pcl: Any) -> dict[str, Any]:
         data = parse_cancel_payload(pcl)

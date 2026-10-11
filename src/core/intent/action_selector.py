@@ -1,4 +1,5 @@
 from src.core.actions.models import ActionMatch
+from .dataflow import describe_outputs
 from .sub_intent import SubIntent
 
 
@@ -45,9 +46,27 @@ class ActionSelector:
                     param_keys.append(self._fmt_param_key(k))
 
             signature = f"{a_name}({', '.join(param_keys)})" if param_keys else f"{a_name}()"
-            known[signature] = a_desc
+            outputs = self._outputs(a_name)
+            # 列出輸出，讓 LLM 知道後續步驟可以用 inputs 接哪些結果
+            known[signature] = f"{a_desc} | Outputs: {describe_outputs(outputs)}" if outputs else a_desc
 
         return known
+
+
+    def _outputs(self, action_name: str) -> list[dict]:
+        try:
+            rows = self.kg.read(
+                """
+                MATCH (a:Action {name:$name})-[r:HAS_OUTPUT]->(o:Output)
+                RETURN o.key AS key, o.type AS type, coalesce(o.desc, o.name) AS desc
+                ORDER BY coalesce(r.order, 999), o.key
+                """,
+                {"name": action_name},
+            )
+        except Exception as e:
+            self.logger.debug("Failed to read outputs of %s: %s", action_name, e)
+            return []
+        return [r for r in rows or [] if isinstance(r, dict) and r.get("key")]
 
 
     # Given a list of sub-intentions, find the best matching action for each, and return a dictionary of action signatures and their descriptions for use in prompt construction.

@@ -1,6 +1,6 @@
 import time
 
-from .action_params import normalize_params, parse_action_call
+from .action_params import match_param_key, normalize_params, parse_action_call
 
 
 def _extract_action_name(action_text: str) -> str:
@@ -42,6 +42,53 @@ def _remap_relationships(relationships: list, id_map: dict[str, str]) -> list[di
     return out
 
 
+def _successors(ids: list[str], relationships: list[dict]) -> dict[str, set[str]]:
+    """同層節點 id → 依 Sequence 關係在它之後執行的節點 id。"""
+    from src.core.monitoring.cursor import _reachable   # 延後 import，避免循環相依
+
+    deps: dict[str, set[str]] = {i: set() for i in ids}
+    for rel in relationships or []:
+        if (rel.get("type") or "").strip().lower() != "sequence":
+            continue
+        a, b = str(rel.get("from_id", "")), str(rel.get("to_id", ""))
+        if a in deps and b in deps and a != b:
+            deps[b].add(a)
+    within = set(ids)
+    return {i: {j for j in ids if i in _reachable(j, deps, within)} for i in ids}
+
+
+def _output_sources(node: dict) -> list[dict]:
+    """節點（含子孫）中可被後續步驟引用的 atomic 步驟與其輸出。"""
+    if node.get("type") == "atomic" or node.get("is_atomic") is True:
+        if not node.get("task"):
+            return []
+        return [{"id": node.get("id"), "task": node.get("task"), "intent": node.get("intent", ""),
+                 "outputs": list(node.get("outputs") or [])}]
+    return [src for child in node.get("sub_plans") or [] if isinstance(child, dict) for src in _output_sources(child)]
+
+
+def _parse_inputs(raw, id_map: dict[str, str], schema: list[dict]) -> tuple[list[dict], list[dict]]:
+    """把 LLM 的 inputs 轉成節點上的 [{"param", "from", "output"}]；from_id 為同層 id，或 "@<id>" 指前面的步驟。"""
+    inputs: list[dict] = []
+    issues: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        param = item.get("param") or item.get("parameter")
+        source = str(item.get("from_id") or item.get("from") or "").strip()
+        output = str(item.get("output") or "").strip()
+        if not param or not source or not output:
+            issues.append({"param": param, "issue": "invalid_input", "detail": "incomplete input", "value": item})
+            continue
+        key, known = match_param_key(param, schema)
+        if schema and not known:
+            issues.append({"param": key, "issue": "invalid_input", "detail": "unknown parameter", "value": item})
+            continue
+        source_id = source[1:] if source.startswith("@") else id_map.get(source, source)
+        inputs.append({"param": key, "from": source_id, "output": output})
+    return inputs, issues
+
+
 class RecursivePlanner:
     def __init__(self, *, decomposer, logger, kg=None, action_store=None, enum_alias=None):
         self.decomposer = decomposer
@@ -76,6 +123,7 @@ class RecursivePlanner:
             else:
                 meta["params_schema"] = []
             meta.update(self._get_action_conditions(action_name))
+            meta["outputs"] = self._get_action_outputs(action_name)
             return meta
         except Exception as e:
             self.logger.debug("Failed to get action metadata for %s: %s", action_name, e)
@@ -92,6 +140,17 @@ class RecursivePlanner:
             self.logger.debug("Failed to get conditions for %s: %s", action_name, e)
             cond = {}
         return {"preconditions": list(cond.get("preconditions") or []), "effects": list(cond.get("effects") or [])}
+
+    def _get_action_outputs(self, action_name: str) -> list[dict]:
+        """Action 宣告的輸出（給後續步驟的 inputs 引用）；取不到時視為沒有。"""
+        getter = getattr(self.action_store, "get_action_outputs", None)
+        if not callable(getter):
+            return []
+        try:
+            return list(getter(action_name) or [])
+        except Exception as e:
+            self.logger.debug("Failed to get outputs for %s: %s", action_name, e)
+            return []
 
     def _get_agent_by_action(self, action_name: str) -> dict | None:
         """
@@ -116,8 +175,10 @@ class RecursivePlanner:
             self.logger.debug("Failed to get agent by action %s: %s", action_name, e)
         return None
 
-    def plan(self, intent, available_actions, *, depth=0, max_depth=4, scheduled_start="N/A", node_id="root", context=None):
-        """遞迴拆解 intent。context 是重規劃脈絡（重規劃原因、環境事實），會傳給每一層的拆解。"""
+    def plan(self, intent, available_actions, *, depth=0, max_depth=4, scheduled_start="N/A", node_id="root",
+             context=None, upstream=None):
+        """遞迴拆解 intent。context 是重規劃脈絡（重規劃原因、環境事實），會傳給每一層的拆解；
+        upstream 是在這部分之前執行的步驟與其輸出，讓下層的步驟以 inputs 引用（見 dataflow.py）。"""
         indent = "    " * depth
         prefix = "└── " if depth > 0 else "[ROOT] "
 
@@ -140,8 +201,9 @@ class RecursivePlanner:
 
         print(f"{indent}{prefix}處理意圖: {intent}")
 
-        if context:
-            result_json = self.decomposer.decompose(intent, available_actions, context=context)
+        call_context = {**(context or {}), "upstream_outputs": upstream} if upstream else context
+        if call_context:
+            result_json = self.decomposer.decompose(intent, available_actions, context=call_context)
         else:
             result_json = self.decomposer.decompose(intent, available_actions)
         if not result_json:
@@ -167,6 +229,7 @@ class RecursivePlanner:
             child_ids.append(global_id)
             id_map.setdefault(local_id, global_id)
         current_node["execution_logic"] = _remap_relationships(result_json.get("relationships", []), id_map)
+        runs_after = _successors(child_ids, current_node["execution_logic"])
 
         for sub, sub_id in zip(sub_intents, child_ids):
             child_intent = sub.get("intent", "")
@@ -201,13 +264,23 @@ class RecursivePlanner:
                     atomic_node["topic"] = action_meta.get("topic")
                     atomic_node["task"] = action_meta.get("task")
                     atomic_node["action_id"] = action_meta.get("action_id")
-                    atomic_node["params_schema"] = action_meta.get("params_schema", [])
-                    # 依 schema 對應名稱、轉型別、檢查 enum 與必填；問題記在 param_issues
+                    schema = atomic_node["params_schema"] = action_meta.get("params_schema", [])
                     if action_meta.get("preconditions"):
                         atomic_node["preconditions"] = action_meta["preconditions"]
                     if action_meta.get("effects"):
                         atomic_node["effects"] = action_meta["effects"]
-                    params, issues = normalize_params(raw_params, atomic_node["params_schema"], self.enum_alias)
+                    if action_meta.get("outputs"):
+                        atomic_node["outputs"] = action_meta["outputs"]
+                    # 接前面步驟輸出的參數：派工時才代入，這裡不取 action 字串中的值
+                    inputs, input_issues = _parse_inputs(sub.get("inputs"), id_map, schema)
+                    bound = {i["param"] for i in inputs}
+                    if inputs:
+                        atomic_node["inputs"] = inputs
+                        raw_params = {k: v for k, v in raw_params.items() if match_param_key(k, schema)[0] not in bound}
+                    # 依 schema 對應名稱、轉型別、檢查 enum 與必填；問題記在 param_issues
+                    params, issues = normalize_params(raw_params, schema, self.enum_alias)
+                    issues = [i for i in issues if not (i["issue"] == "missing_required" and i["param"] in bound)]
+                    issues += input_issues
                     atomic_node["params"] = params
                     if issues:
                         atomic_node["param_issues"] = issues
@@ -215,6 +288,12 @@ class RecursivePlanner:
                 current_node["sub_plans"].append(atomic_node)
             else:
                 time.sleep(0.1)
+                # 已規劃、且不排在這個子意圖之後的兄弟步驟，其輸出可被子意圖內的步驟引用
+                available = list(upstream or []) + [
+                    src for prev in current_node["sub_plans"]
+                    if str(prev.get("id")) not in runs_after.get(sub_id, set())
+                    for src in _output_sources(prev)
+                ]
                 child_tree = self.plan(
                     child_intent,
                     available_actions,
@@ -223,6 +302,7 @@ class RecursivePlanner:
                     scheduled_start=sched_time,
                     node_id=sub_id,
                     context=context,
+                    upstream=available,
                 )
                 if child_tree:
                     current_node["sub_plans"].append(child_tree)

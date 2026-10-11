@@ -33,6 +33,7 @@ def _config(store="memory") -> dict:
     intent["monitoring"] = {"poll_interval_sec": 0.01, "max_replans": 1, "max_retries_per_node": 1,
                             "enable_llm_assist": False}
     intent["intentions"] = {"store": store}
+    intent["response"] = {"mode": "template"}      # 單元測試不呼叫真實 LLM
     cfg["intent"] = intent
     return cfg
 
@@ -206,4 +207,31 @@ def test_memory_store_can_be_selected():
     h = _Harness(store="memory")
     h.agent.on_activate()
     assert isinstance(h.agent.intentions.store, InMemoryIntentionStore)
+    h.close()
+
+
+# ----------------------------------------------------------------------
+# A-03：意圖結束時給使用者的回覆
+# ----------------------------------------------------------------------
+def test_finished_intention_carries_the_reply():
+    unresolved = {"id": "root", "type": "leaf_unresolved", "reason": "out of scope", "sub_plans": []}
+    h = _Harness(plans={"做不到": unresolved})
+    h.agent.on_activate()
+    ok = h.agent.intentions.submit("介紹展品").intention_id
+    bad = h.agent.intentions.submit("做不到").intention_id
+    assert h.agent.intentions.wait_idle(5)
+    assert h.agent.intentions.get(ok)["result"]["response"] == "已完成「介紹展品」。\n・介紹展品-T：完成"
+    assert h.agent.intentions.get(bad)["result"]["response"] == "抱歉，無法處理「做不到」：out of scope"
+    final = [d for t, d in h.published if t == "intention.status" and d["intention_id"] == ok][-1]
+    assert final["result"]["response"].startswith("已完成")
+    h.close()
+
+
+def test_reply_can_be_turned_off():
+    h = _Harness()
+    h.agent.responder.mode = "off"
+    h.agent.on_activate()
+    iid = h.agent.intentions.submit("介紹展品").intention_id
+    assert h.agent.intentions.wait_idle(5)
+    assert h.agent.intentions.get(iid)["result"]["response"] is None
     h.close()

@@ -100,7 +100,8 @@ PENDING ──► PLANNING ──► EXECUTING ──► ACHIEVED
   "result": null
 }
 ```
-結束時 `result` 為 `{"ok", "message", "state_counts", "stopped"}`。
+結束時 `result` 為 `{"ok", "message", "response", "state_counts", "stopped"}`；`response` 是給使用者的回覆
+（彙整各步驟的結果，見 [`step_dataflow.md`](step_dataflow.md) §4），被搶占或取消而中止時為 null。
 
 ---
 
@@ -125,4 +126,7 @@ PENDING ──► PLANNING ──► EXECUTING ──► ACHIEVED
 store = "blackboard"           # blackboard（預設）或 memory
 manager_name = "intentional_agent"
 preemption = true
+
+[intent.response]
+mode = "llm"                   # 給使用者的回覆：llm（預設，失敗時改用 template）、template、off
 ```

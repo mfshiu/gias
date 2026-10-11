@@ -82,7 +82,7 @@
 | **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 已修正（059947d） |
 | **C-07** | 正確性 | 參數用正規表示式從 LLM 字串解析，不依 `params_schema` 驗證型別、enum 或必填 | [planner.py:23](../src/core/intent/planner.py#L23) | 例如 `Interests=null` 會被當成字串 "null" 傳下去 | 已修正（059947d） |
 | **C-08** | 正確性 | 判斷環境事件影響哪些節點時用子字串比對 | [trigger.py:219](../src/core/monitoring/trigger.py#L219) | "A1" 會誤中 "A12"，觸發不必要的重規劃 | 已修正（934c9c9） |
-| **A-03** | 架構落差 | 步驟之間不能傳遞資料，也沒有把結果彙整回覆給使用者的步驟 | [planner.py:161](../src/core/intent/planner.py#L161) | 多步驟任務無法串接，例如「推薦展品」的結果傳不到「規劃路線」 | 未處理 |
+| **A-03** | 架構落差 | 步驟之間不能傳遞資料，也沒有把結果彙整回覆給使用者的步驟 | [planner.py:161](../src/core/intent/planner.py#L161) | 多步驟任務無法串接，例如「推薦展品」的結果傳不到「規劃路線」 | 已修正 |
 | **A-04** | 架構落差 | 同一個意圖被 LLM 拆兩次：`parse_intent` 的結果只用來比對動作，planner 又重新拆一次 | [intentional_agent.py:226](../src/core/intentional_agent.py#L226)、[intentional_agent.py:250](../src/core/intentional_agent.py#L250) | 兩次結果可能不一致，成本也加倍 | 未處理 |
 | **P-01** | 效能 | `select_actions` 不帶 slots 又比對一次，而且每個動作都再查一次 KG（N+1 查詢） | [action_selector.py:59](../src/core/intent/action_selector.py#L59)、[action_selector.py:32](../src/core/intent/action_selector.py#L32) | 規劃延遲變長，embedding 費用增加 | 未處理 |
 | **P-02** | 效能 | 每次比對都執行 `SHOW INDEXES` 加 `awaitIndex`；讀不到維度時還會 DROP 索引再重建 | [action_store.py:93](../src/kg/action_store.py#L93)、[action_matcher.py:235](../src/core/intent/action_matcher.py#L235) | 多了往返延遲，正式環境中索引可能被反覆重建 | 未處理 |
@@ -268,6 +268,28 @@ L-04 已讓 `adapted` 進度事件用於監測判斷；這次讓其他進度事�
 - seed 須重新執行才會把前置條件寫進 Action KG（seed 會清空並重建 Action KG）；尚未在真實的 Neo4j / Blackboard 上執行
 - 支援效果，但 seed 目前沒有宣告（場館狀態都由環境決定）
 - 意圖之間的衝突偵測（`conflicts_between_intents`）仍未使用，留給多意圖同時執行時處理（見 A-01）
+
+### 2026-10-11：A-03
+
+步驟之間的資料傳遞採「LLM 宣告引用、程式代入實際值」：Action KG 宣告每個 Action 的輸出，LLM 拆解時以 `inputs` 把參數接到前面步驟的輸出，派工前才代入實際值；意圖結束時再把各步驟的結果彙整成回覆。完整說明見 [`docs/step_dataflow.md`](step_dataflow.md)。
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 輸出宣告 | `(:Action)-[:HAS_OUTPUT]->(:Output {key, name, desc, type})`；讀取 `ActionStore.get_action_outputs`，seed 用 `write_action_outputs`。拆解 prompt 的動作清單列出輸出 | `src/kg/action_store.py`、`action_selector.py` |
+| 規劃 | 子意圖新增 `inputs: [{param, from_id, output}]`（`output` 可加索引，如 `booths[0]`；`message` 為文字回覆）。planner 轉成節點的 `inputs`（id 轉成計畫中的節點 id）、略過 action 字串中的佔位值、由 inputs 提供的必填參數不算缺少；下層拆解時列出前面步驟的輸出，以 `"@<id>"` 引用 | `planner.py`、`prompt_builder.py`、`action_params.py` |
+| 驗證 | 來源與目標沒有先後時補上 Sequence；來源不存在、排在後面、沒有宣告該輸出等記為 `invalid_input`（`strict` 時拒絕計畫） | `src/core/intent/dataflow.py`（新）、`intentional_agent.py` |
+| 執行 | 來源未結束時不派工；派工前取值並依 schema 轉型，再檢查前置條件；取不到時以 `input unavailable: ...` 失敗，不重試、直接重規劃子樹。同步執行路徑也會代入。重規劃脈絡新增 `completed_steps`（已完成步驟的回覆與輸出），新計畫可直接使用 | `intentional_agent.py`、`cursor.py`、`events.py`、`trigger.py`、`repair.py` |
+| 執行端 | 輸出寫在結果的 `result`：RecommendExhibits（`booths`、`exhibitors`、`avoid_zones`，`limit` 生效）、CrowdStatus（各狀態的區域）、導航類（抵達位置；GuideAgent 另有 `reached`）、SuggestRoute（`waypoints`） | `info_agent.py`、`navigation_agent.py`、`navigation_scenario/live/guide_agent.py` |
+| 最後回覆 | `ResponseComposer`：`[intent.response] mode = llm`（預設，失敗時改用 template）/ `template` / `off`。回覆放在執行摘要的 `response` 與意圖的 `result.response`（隨 `intention.status` 發佈並寫入 Blackboard），單次模式結束前印出 | `src/core/intention/response.py`（新）、`manager.py`、`intentional_agent.py` |
+| Seed | 宣告上述輸出；展覽情境的 SuggestRoute 新增 `waypoints` 參數 | 兩個 seed 檔 |
+
+新增測試 47 個（資料傳遞與回覆單元測試 40、監測迴圈與同步執行 3、規劃驗證 2、意圖服務 2），並以突變測試確認 14 個關鍵行為在還原後會被測試抓到。為配合新行為修改 3 個既有測試：拆解 prompt 多了第 8 條規則（重規劃規則改為 9、10）、導航結果多了 `current_location` 輸出、意圖服務測試改用 template 回覆（避免單元測試呼叫真實 LLM）。全部非 integration 測試（不含 `tests/kg`）共 914 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+**注意與仍未涵蓋**：
+- seed 須重新執行才會把輸出寫進 Action KG；尚未在真實的 LLM / Neo4j 上執行，LLM 是否確實使用 `inputs` 還需實測
+- 預設模式每個意圖多一次 LLM 呼叫（產生回覆）；導航 benchmark 直接呼叫規劃與執行，不受影響
+- `inputs` 只能引用同一份計畫中的步驟；重規劃後的新計畫改以脈絡中已完成步驟的結果值帶入
+- 被搶占後續做的意圖，回覆只涵蓋續做這一段的步驟
 
 ---
 

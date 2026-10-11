@@ -156,6 +156,20 @@ class ActionStore:
         return {"preconditions": list(row.get("preconditions") or []), "effects": list(row.get("effects") or [])}
 
     # ---------------------------
+    # Outputs（見 src/core/intent/dataflow.py）
+    # ---------------------------
+    def get_action_outputs(self, action_name: str) -> list[dict]:
+        """取得 Action 宣告的輸出：[{key, name, desc, type}]，依宣告順序。"""
+        return self.kg.query(
+            """
+            MATCH (a:Action {name:$name})-[r:HAS_OUTPUT]->(o:Output)
+            RETURN o.key AS key, o.name AS name, o.desc AS desc, o.type AS type
+            ORDER BY coalesce(r.order, 999), o.key
+            """,
+            {"name": action_name},
+        ) or []
+
+    # ---------------------------
     # Vector search
     # ---------------------------
     def search_actions_by_vector(
@@ -209,6 +223,7 @@ class ActionStore:
 # Seed helpers
 # ---------------------------
 CLEAR_ACTION_CONDITIONS = "MATCH (n) WHERE n:Precondition OR n:Effect DETACH DELETE n"
+CLEAR_ACTION_OUTPUTS = "MATCH (o:Output) DETACH DELETE o"
 
 
 def write_action_conditions(write, action_id: str, *, preconditions=(), effects=()) -> None:
@@ -247,5 +262,27 @@ def write_action_conditions(write, action_id: str, *, preconditions=(), effects=
                 "value": spec.get("value"),
                 "value_arg": spec.get("value_arg"),
                 "desc": spec.get("desc", ""),
+            },
+        )
+
+
+def write_action_outputs(write, action_id: str, outputs=()) -> None:
+    """seed 用：寫入 Action 宣告的輸出（seed 前先執行 CLEAR_ACTION_OUTPUTS）。
+
+    執行端在結果的 result 欄位提供這些輸出；欄位意義見 src/core/intent/dataflow.py。
+    """
+    for order, spec in enumerate(outputs):
+        write(
+            """
+            MATCH (a:Action {id:$aid})
+            CREATE (a)-[:HAS_OUTPUT {order: $order}]->(:Output {key: $key, name: $name, desc: $desc, type: $type})
+            """,
+            {
+                "aid": action_id,
+                "order": order,
+                "key": spec["key"],
+                "name": spec.get("name", ""),
+                "desc": spec.get("desc", ""),
+                "type": spec.get("type", "string"),
             },
         )

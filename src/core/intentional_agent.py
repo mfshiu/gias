@@ -46,6 +46,7 @@ from src.core.intent.prompt_builder import PromptBuilder
 from src.core.intent.llm_decomposer import LLMDecomposer
 from src.core.intent.planner import RecursivePlanner
 from src.core.intent.scope_gate import ScopeGate
+from src.core.intent import dataflow
 from src.core.intent import preconditions as pre
 from src.core.intention import (
     TOPIC_INTENTION_CANCEL,
@@ -56,6 +57,7 @@ from src.core.intention import (
     Intention,
     IntentionManager,
 )
+from src.core.intention.response import ResponseComposer
 from src.agents._executor_utils import (
     TOPIC_INFO_PROGRESS,
     TOPIC_INFO_RESULT,
@@ -87,7 +89,7 @@ from src.core.monitoring import (
     find_duplicate_node_ids,
 )
 from src.core.monitoring.trigger import TriggerConfig
-from src.core.monitoring.events import PRECONDITION_FAILED
+from src.core.monitoring.events import INPUT_UNAVAILABLE, PRECONDITION_FAILED
 from src.blackboard.client import (
     subscribe_blackboard,
     subscriber_topic,
@@ -152,6 +154,9 @@ class IntentionalAgent(Agent):
             enum_alias=self.domain.enum_alias,
         )
         self.scope_gate = ScopeGate(llm=self.llm, logger=logger)
+        # 意圖結束時給使用者的回覆（[intent.response] mode：llm / template / off）
+        response_cfg = (agent_config.get("intent") or {}).get("response") or {}
+        self.responder = ResponseComposer(self.llm, mode=response_cfg.get("mode", "llm"), logger=logger)
 
         # ---- 監測子系統（v2）-----------------------------------------
         self._monitor: ExecutionMonitor | None = None
@@ -204,6 +209,9 @@ class IntentionalAgent(Agent):
             self.intentions.wait_idle()
             for item in self.intentions.list():
                 logger.info("Intention %s finished: %s (%s)", item["intention_id"], item["status"], item["reason"])
+                reply = (item.get("result") or {}).get("response")
+                if reply:
+                    print(f"\n[IntentionalAgent] {reply}\n", flush=True)
             self._terminate()
 
     def on_terminating(self):
@@ -253,19 +261,36 @@ class IntentionalAgent(Agent):
         context = self._resume_context(intention) if intention.attempts > 1 else None
         plan = self.plan_intention(intention.text, context=context)
         if plan.get("type") == "leaf_unresolved":
-            return {"plan": plan, "summary": {"ok": False, "message": plan.get("reason")}}
+            summary = {"ok": False, "message": plan.get("reason")}
+            summary["response"] = self.compose_response(intention.text, plan=plan)
+            return {"plan": plan, "summary": summary}
         if stop_event.is_set():
             return {"plan": plan, "stopped": True}
         on_planned(plan)
         if not self._monitoring_enabled():
-            return {"plan": plan, "summary": self.execute_plan(plan)}
+            summary = self.execute_plan(plan)
+            summary["response"] = self.compose_response(intention.text, plan=plan, summary=summary)
+            return {"plan": plan, "summary": summary}
         summary = self.execute_plan_with_monitoring(plan, dispatcher=self.execution_dispatcher, stop_event=stop_event)
         done = [
-            {"id": r.get("id"), "task": r.get("task"), "intent": r.get("intent"), "state": "done"}
+            {"id": r.get("id"), "task": r.get("task"), "intent": r.get("intent"), "state": "done",
+             "message": (r.get("result") or {}).get("message") or "", "outputs": dataflow.step_outputs(r.get("result"))}
             for r in summary.get("results") or [] if r.get("state") == "done"
         ]
         self._completed_steps.setdefault(intention.intention_id, []).extend(done)
+        if not summary.get("stopped"):
+            summary["response"] = self.compose_response(intention.text, plan=plan, summary=summary)
         return {"plan": plan, "summary": summary, "stopped": bool(summary.get("stopped"))}
+
+    def compose_response(
+        self, intention: str, *, plan: dict[str, Any], summary: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """意圖結束時給使用者的回覆：{"text", "source"}（見 src/core/intention/response.py）。"""
+        try:
+            return self.responder.compose(intention, plan=plan, summary=summary)
+        except Exception as e:
+            logger.warning("Composing the reply failed: %s", e)
+            return None
 
     def _resume_context(self, intention: Intention) -> dict[str, Any]:
         """被搶占後續做：告訴規劃者已完成的步驟（不要重做）與目前環境。"""
@@ -498,6 +523,10 @@ class IntentionalAgent(Agent):
         cycles = find_dependency_cycles(plan)
         if cycles:
             return reject("Planner produced cyclic Sequence dependencies.", dependency_cycles=cycles)
+        # 步驟之間的資料傳遞：無效的 inputs 記為參數問題；來源與目標沒有先後時補上 Sequence
+        added = dataflow.check_inputs(plan)
+        if added:
+            logger.info("Added Sequence relationships for data dependencies: %s", added)
 
         param_issues = self._collect_param_issues(plan)
         if param_issues:
@@ -573,6 +602,22 @@ class IntentionalAgent(Agent):
                     index.setdefault("".join(str(name).lower().split()), entity)
             self._alias_index = index
         return self._alias_index.get("".join(value.lower().split()), value)
+
+    def _bind_inputs(self, rec, cursor: PlanCursor) -> str | None:
+        """把前面步驟的輸出代入 params（A-03）；取不到時回傳錯誤訊息，不派工。"""
+        node = rec.node
+        if not node.get("inputs"):
+            return None
+
+        def lookup(source_id: str) -> tuple[str | None, dict[str, Any] | None]:
+            source = cursor.record(source_id)
+            return (source.state.value, source.last_result) if source is not None else (None, None)
+
+        params, error = dataflow.resolve_inputs(node, lookup, enum_alias=self.domain.enum_alias)
+        if error:
+            return f"{INPUT_UNAVAILABLE}: {error}"
+        cursor.update_pending_params(rec.node_id, params)
+        return None
 
     def _dispatch_precondition_failure(self, rec, cursor: PlanCursor) -> str | None:
         """派工前再檢查一次前置條件（狀態可能在規劃後改變）；不成立時回傳錯誤訊息。"""
@@ -706,7 +751,7 @@ class IntentionalAgent(Agent):
         return illegal
 
     # strict 模式下會讓計畫被拒絕的參數問題（unknown_param 只記錄，不拒絕）
-    _BLOCKING_PARAM_ISSUES = frozenset({"missing_required", "invalid_type", "invalid_enum"})
+    _BLOCKING_PARAM_ISSUES = frozenset({"missing_required", "invalid_type", "invalid_enum", "invalid_input"})
 
     def _param_validation_mode(self) -> str:
         """intent.param_validation：warn（預設，記錄並照常執行）或 strict（有問題就拒絕計畫）。"""
@@ -836,11 +881,35 @@ class IntentionalAgent(Agent):
             logger.warning("Publish failed: %s", e)
             return {"ok": False, "result": {"payload": payload, "error": str(e)}}
 
-    def _execute_node(self, node: dict[str, Any]) -> list[dict[str, Any]]:
+    def _bind_inputs_sync(
+        self, node: dict[str, Any], done: dict[str, dict[str, Any]]
+    ) -> tuple[dict[str, Any], str | None]:
+        """同步執行路徑的資料傳遞：回傳 (代入後的節點, 錯誤訊息)。done 是已執行節點 id → 結果。"""
+        if not node.get("inputs"):
+            return node, None
+
+        def lookup(source_id: str) -> tuple[str | None, dict[str, Any] | None]:
+            r = done.get(source_id)
+            if r is None:
+                return None, None
+            payload = r.get("result") if isinstance(r.get("result"), dict) else {}
+            return ("done" if r.get("ok") else "failed"), payload
+
+        params, error = dataflow.resolve_inputs(node, lookup, enum_alias=self.domain.enum_alias)
+        if error:
+            return node, f"{INPUT_UNAVAILABLE}: {error}"
+        return {**node, "params": params}, None
+
+    def _execute_node(
+        self, node: dict[str, Any], done: dict[str, dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
+        done = {} if done is None else done
 
         if (node.get("type") == "atomic") or (node.get("is_atomic") is True):
-            r = self._execute_atomic_node(node)
+            node, error = self._bind_inputs_sync(node, done)
+            r = {"ok": False, "result": {"error": error}} if error else self._execute_atomic_node(node)
+            done[str(node.get("id"))] = r
             results.append({"id": node.get("id"), "intent": node.get("intent"), **r})
             return results
 
@@ -850,10 +919,10 @@ class IntentionalAgent(Agent):
 
         for level in levels:
             if len(level) == 1:
-                results.extend(self._execute_node(level[0]))
+                results.extend(self._execute_node(level[0], done))
             else:
                 with ThreadPoolExecutor(max_workers=len(level)) as ex:
-                    futures = [ex.submit(self._execute_node, child) for child in level]
+                    futures = [ex.submit(self._execute_node, child, done) for child in level]
                     for i, future in enumerate(futures):
                         try:
                             results.extend(future.result())
@@ -1191,14 +1260,15 @@ class IntentionalAgent(Agent):
             logger.warning("Dispatch skipped: node=%s has no bound task", rec.node_id)
             cursor.mark_failed(rec.node_id, "node has no bound task; not dispatched")
             return
-        failure = self._dispatch_precondition_failure(rec, cursor)
+        # 先代入前面步驟的輸出，再以實際參數檢查前置條件
+        failure = self._bind_inputs(rec, cursor) or self._dispatch_precondition_failure(rec, cursor)
         if failure:
             # 不派工；以失敗結果交給監測迴圈，trigger 會直接升級為重規劃（不重試）
             task_id = new_task_id(prefix=str(rec.node_id))
             cursor.mark_dispatched(rec.node_id, task_id=task_id)
             monitor.bind_task(task_id, rec.node_id)
             logger.warning("Not dispatching node %s: %s", rec.node_id, failure)
-            monitor.on_action_result("precondition", {
+            monitor.on_action_result("dispatch_check", {
                 "task_id": task_id, "ok": False, "error": failure, "task": node.get("task"),
             })
             return

@@ -85,6 +85,7 @@
 | `ok` | 是 | 是否成功 |
 | `cancelled` | 是 | 是否因 cancel 而結束（即使 `ok=true`） |
 | `task`, `message`, `result`, `error` | 否 | 業務內容 |
+| `result.<output>` | 否 | Action KG 宣告的輸出（例：`result.booths`），供後續步驟引用（見 [`step_dataflow.md`](step_dataflow.md)） |
 | `result.adaptations` | 否 | 執行中自行做的調整清單（格式同 §5 的 `adaptation`） |
 | `started_at`, `finished_at`, `elapsed_sec` | 否 | 計時 |
 
@@ -167,6 +168,8 @@ IA 訂閱 `info.progress` / `navigation.progress`；只採用屬於節點目前�
 | `interruptible` | KG `Action.interruptible` | 預設 true |
 | `deadline_sec` | KG `Action.expected_latency_sec` × 倍率 | timeout |
 | `preconditions` / `effects` | KG `(:Action)-[:REQUIRES]->(:Precondition)` / `-[:PRODUCES]->(:Effect)` | 規劃後與派工前的前置條件檢查（見 [`action_preconditions.md`](action_preconditions.md)） |
+| `outputs` | KG `(:Action)-[:HAS_OUTPUT]->(:Output)` | 這個步驟會產生的輸出 |
+| `inputs` | planner（LLM 的 `inputs`） | `[{"param", "from", "output"}]`：派工前把前面步驟的輸出代入參數（見 [`step_dataflow.md`](step_dataflow.md)） |
 
 舊節點完全相容：缺欄位時走預設值（`interruptible=true`、`side_effect="none"`、`deadline_sec=30`）。
 
@@ -198,7 +201,8 @@ execute_plan_with_monitoring(plan):
     if decision is REPLAN_SUBTREE / REPLAN_ROOT: repair.apply(decision)；
       新計畫換上後才取消被取代的派工（重規劃失敗時原本的派工繼續執行）
     next_atomics = cursor.next_ready_atomics()
-    for atom in next_atomics:
+    for atom in next_atomics:            # inputs 的來源步驟尚未結束的節點不會出現在這裡
+      代入 inputs（前面步驟的輸出）；取不到 → 不派工，以 ok=false、error "input unavailable: ..." 交給 trigger
       前置條件不成立（intent.preconditions.check_before_dispatch）
         → 不派工，以 ok=false、error "precondition failed: ..." 交給 trigger（不重試，直接 REPLAN_SUBTREE）
       dispatch_async(atom)   # publish + subscribe(return_topic)

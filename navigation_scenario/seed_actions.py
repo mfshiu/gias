@@ -22,7 +22,12 @@ import time
 import uuid
 
 from src.app_helper import get_agent_config
-from src.kg.action_store import CLEAR_ACTION_CONDITIONS, write_action_conditions
+from src.kg.action_store import (
+    CLEAR_ACTION_CONDITIONS,
+    CLEAR_ACTION_OUTPUTS,
+    write_action_conditions,
+    write_action_outputs,
+)
 from src.kg.adapter_neo4j import Neo4jBoltAdapter
 from src.llm.client import LLMClient
 
@@ -37,6 +42,10 @@ ACTIONS: list[dict] = [
         "desc": "引導訪客前往指定的展區、攤位或展品位置",
         "topic": "navigation.request",
         "task": "LocateExhibit",
+        "outputs": [
+            {"key": "reached", "name": "抵達的目的地", "desc": "依序抵達的地點 id", "type": "list[string]"},
+            {"key": "current_location", "name": "目前位置", "desc": "移動結束後訪客所在的位置", "type": "string"},
+        ],
         "preconditions": [
             {"key": "zone_state", "arg": "target_name", "op": "not_in", "value": ["Closed"],
              "desc": "目的地所在區域沒有關閉"},
@@ -63,6 +72,10 @@ ACTIONS: list[dict] = [
         "desc": "在移動過程中即時提供方向、轉彎與抵達提示",
         "topic": "navigation.request",
         "task": "NavigationAssistance",
+        "outputs": [
+            {"key": "reached", "name": "抵達的目的地", "desc": "依序抵達的地點 id", "type": "list[string]"},
+            {"key": "current_location", "name": "目前位置", "desc": "移動結束後訪客所在的位置", "type": "string"},
+        ],
         "preconditions": [
             {"key": "zone_state", "arg": "destination", "op": "not_in", "value": ["Closed"],
              "desc": "目的地所在區域沒有關閉"},
@@ -88,6 +101,10 @@ ACTIONS: list[dict] = [
         "desc": "根據訪客位置、目標與限制（避開擁擠/封閉/特定區域）規劃最佳路線",
         "topic": "navigation.request",
         "task": "SuggestRoute",
+        "outputs": [
+            {"key": "reached", "name": "抵達的目的地", "desc": "依序抵達的地點 id", "type": "list[string]"},
+            {"key": "current_location", "name": "目前位置", "desc": "移動結束後訪客所在的位置", "type": "string"},
+        ],
         "preconditions": [
             {"key": "zone_state", "arg": "destination", "op": "not_in", "value": ["Closed"],
              "desc": "目的地所在區域沒有關閉"},
@@ -137,6 +154,11 @@ ACTIONS: list[dict] = [
         "desc": "回報指定展區或全場目前的人潮與壅塞狀況",
         "topic": "info.request",
         "task": "CrowdStatus",
+        "outputs": [
+            {"key": "crowded_zones", "name": "擁擠區", "desc": "目前擁擠的區域", "type": "list[string]"},
+            {"key": "normal_zones", "name": "正常區", "desc": "人潮正常的區域", "type": "list[string]"},
+            {"key": "sparse_zones", "name": "稀疏區", "desc": "人潮稀疏的區域", "type": "list[string]"},
+        ],
         "params": [
             {"key": "target_area", "name": "區域",
              "desc": "要查詢人潮的展區",
@@ -285,6 +307,7 @@ def main() -> int:
         kg.write("MATCH (a:Action) DETACH DELETE a", {})
         kg.write("MATCH (p:Param) DETACH DELETE p", {})
         kg.write(CLEAR_ACTION_CONDITIONS, {})
+        kg.write(CLEAR_ACTION_OUTPUTS, {})
 
         print(f"  [2] 寫入 {len(ACTIONS)} 個導航相關 action")
         dim: int | None = None
@@ -366,6 +389,7 @@ def main() -> int:
                 preconditions=action.get("preconditions", []),
                 effects=action.get("effects", []),
             )
+            write_action_outputs(kg.write, aid, action.get("outputs", []))
 
             print(
                 f"    - {name} (task={task}, topic={topic}, "

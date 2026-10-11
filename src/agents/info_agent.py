@@ -84,10 +84,12 @@ def _execute(
     params: dict[str, Any],
     *,
     cancel_token: CancelToken | None = None,
+    outputs: dict[str, Any] | None = None,
 ) -> tuple[str, bool]:
     """模擬執行資訊類 task。
 
     回傳 (message, cancelled)；cancelled=True 時 message 可能為部分結果。
+    outputs：task 的輸出寫在這裡（Action KG 的 Output，供後續步驟引用；見 src/core/intent/dataflow.py）。
     """
     if task == "CrowdStatus":
         ok = _simulate_progress(
@@ -115,6 +117,12 @@ def _execute(
             if sparse:
                 zones = ", ".join(h.get("zone", "?") for h in sparse)
                 lines.append(f"【黑板觀察】稀疏區: {zones}")
+            if outputs is not None:
+                outputs.update({
+                    "crowded_zones": [h.get("zone") for h in crowded if h.get("zone")],
+                    "normal_zones": [h.get("zone") for h in normal if h.get("zone")],
+                    "sparse_zones": [h.get("zone") for h in sparse if h.get("zone")],
+                })
             return ("；".join(lines) if lines else "目前各展區人潮狀況正常。", False)
         return ("無法取得黑板人潮資料（請確認觀察者與黑板代理已啟動）。", False)
 
@@ -133,7 +141,13 @@ def _execute(
         hotspots = get_crowd_hotspots(agent)
         booths = get_open_booths(agent)
         avoid = [h.get("zone") for h in (hotspots or []) if h.get("crowd_status") == "Crowded"]
-        rec = [b.get("exhibitor") or b.get("id") for b in (booths or []) if b.get("id")]
+        recommended = [b for b in (booths or []) if b.get("id")]
+        limit = params.get("limit")
+        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+            recommended = recommended[:limit]
+        rec = [b.get("exhibitor") or b.get("id") for b in recommended]
+        if outputs is not None:
+            outputs.update({"booths": [b["id"] for b in recommended], "exhibitors": rec, "avoid_zones": avoid})
         msg = f"已根據興趣 {interests} 推薦展區。"
         if avoid:
             msg += f" 【黑板觀察】建議避開擁擠區: {', '.join(avoid)}"
@@ -277,8 +291,9 @@ class InfoAgent(Agent):
         started_at = _now_iso()
         t0 = time.time()
         cancelled = False
+        outputs: dict[str, Any] = {}
         try:
-            message, cancelled = _execute(self, task, params, cancel_token=token)
+            message, cancelled = _execute(self, task, params, cancel_token=token, outputs=outputs)
         except Exception as e:
             logger.exception("InfoAgent execute failed: %s", e)
             message, cancelled = (f"執行失敗：{e}", False)
@@ -316,6 +331,7 @@ class InfoAgent(Agent):
             started_at=started_at,
             finished_at=finished_at,
             elapsed_sec=elapsed,
+            result=outputs if ok and outputs else None,
         )
 
         if idempotency_key and ok:

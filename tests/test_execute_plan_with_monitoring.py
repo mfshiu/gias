@@ -909,3 +909,74 @@ def test_effects_of_completed_steps_count_at_dispatch():
     result = agent.execute_plan_with_monitoring(plan, dispatcher=disp, llm_decider=_no_llm)
     assert result["ok"] is True
     assert [c["node_id"] for c in disp.call_log] == ["a", "b"]
+
+
+# ----------------------------------------------------------------------
+# A-03：步驟之間的資料傳遞
+# ----------------------------------------------------------------------
+_WAYPOINTS = {"key": "waypoints", "type": "list[string]", "required": True}
+
+
+def _recommend_then_route(output="booths"):
+    rec = _atomic("a", task="RecommendExhibits")
+    rec["outputs"] = [{"key": "booths", "type": "list[string]"}]
+    route = _atomic("b", task="SuggestRoute", topic="navigation.request")
+    route.update(params_schema=[_WAYPOINTS], inputs=[{"param": "waypoints", "from": "a", "output": output}])
+    return _root([_composite("L2-1", [rec, route], exec_logic=[{"type": "Sequence", "from_id": "a", "to_id": "b"}],
+                             intent="推薦並規劃路線")])
+
+
+def test_output_of_one_step_becomes_parameter_of_the_next():
+    agent = _make_agent()
+    disp = make_dispatcher(agent, responses_by_task={
+        "RecommendExhibits": [{"ok": True, "message": "推薦兩個攤位", "result": {"booths": ["B_AI1", "B_RB1"]}}],
+    })
+    result = agent.execute_plan_with_monitoring(_recommend_then_route(), dispatcher=disp, llm_decider=_no_llm)
+    assert result["ok"] is True
+    route_call = next(c for c in disp.call_log if c["node_id"] == "b")
+    assert route_call["payload"]["params"] == {"waypoints": ["B_AI1", "B_RB1"]}
+    route = next(r for r in result["results"] if r["id"] == "b")
+    assert result["plan"]["sub_plans"][0]["sub_plans"][1]["params"] == {"waypoints": ["B_AI1", "B_RB1"]}
+    assert route["state"] == "done"
+
+
+def test_missing_output_replans_without_dispatching_or_retrying():
+    agent = _make_agent()
+    contexts = []
+
+    def planner(intent, context):
+        contexts.append(context)
+        return _composite("NEW", [_atomic("na", task="SuggestRoute", topic="navigation.request")])
+
+    disp = make_dispatcher(agent, responses_by_task={"RecommendExhibits": [{"ok": True, "result": {}}]})
+    result = agent.execute_plan_with_monitoring(_recommend_then_route(), dispatcher=disp,
+                                                subtree_planner=planner, llm_decider=_no_llm)
+    assert result["ok"] is True
+    ids = [c["node_id"] for c in disp.call_log]
+    assert ids[0] == "a" and len(ids) == 2 and ids[1].endswith("-na")   # b 沒有派工
+    original = next(r for r in result["results"] if r["id"] == "b")
+    assert original["attempts"] == 1                                      # 沒有重試
+    error = contexts[0]["replan"]["affected_steps"][0]["error"]
+    assert error.startswith("input unavailable: step a produced no 'booths'")
+    assert contexts[0]["completed_steps"][0]["id"] == "a"
+
+
+def test_sync_execution_passes_outputs_between_steps():
+    agent = _make_agent()
+    calls = []
+
+    def run(node, timeout=30):
+        calls.append(dict(node.get("params") or {}))
+        if node["task"] == "RecommendExhibits":
+            return {"ok": True, "result": {"ok": True, "message": "m", "result": {"booths": ["B_AI1"]}}}
+        return {"ok": True, "result": {"ok": True, "message": "route"}}
+
+    agent._execute_atomic_node = run
+    summary = agent.execute_plan(_recommend_then_route())
+    assert summary["ok"] is True
+    assert calls == [{}, {"waypoints": ["B_AI1"]}]
+
+    calls.clear()
+    summary = agent.execute_plan(_recommend_then_route(output="missing"))
+    assert summary["ok"] is False and len(calls) == 1
+    assert summary["results"][1]["result"]["error"].startswith("input unavailable")

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .events import (
-    PRECONDITION_FAILED,
+    NON_RETRYABLE_ERRORS,
     ActionResult,
     EnvChange,
     ExecutorAdaptation,
@@ -230,8 +230,8 @@ class ReplanTrigger:
                 decision = self._consult_llm(intent=intent, env_changes=[], action_results=[ar], cursor=cursor)
                 if decision is not None:
                     return decision
-                # 預算允許 retry（前置條件不成立時不重試：狀態沒變，重派必然再失敗）
-                retryable = not str(ar.error or rec.error or "").startswith(PRECONDITION_FAILED)
+                # 預算允許 retry（前置條件不成立、取不到前面步驟的輸出時不重試：狀態沒變，重派必然再失敗）
+                retryable = not str(ar.error or rec.error or "").startswith(NON_RETRYABLE_ERRORS)
                 if (retryable and self.config.enable_retry and self.budget_guard is not None
                         and self.budget_guard.retry_available(rec.node_id)):
                     return ReplanDecision(

@@ -260,3 +260,30 @@ def test_resolve_entity_uses_domain_aliases():
     assert agent._resolve_entity("AI展區") == "AI_Tech_Area"
     assert agent._resolve_entity("ai_tech_area") == "AI_Tech_Area"
     assert agent._resolve_entity("B_GM1") == "B_GM1"
+
+
+# ----------------------------------------------------------------------
+# A-03：步驟之間的資料傳遞
+# ----------------------------------------------------------------------
+def _with_input(source="1", output="booths", required=True):
+    rec = _atomic("1", task="RecommendExhibits")
+    rec["outputs"] = [{"key": "booths", "type": "list[string]"}]
+    route = _atomic("2", task="SuggestRoute")
+    route.update(params={}, params_schema=[{"key": "waypoints", "type": "list[string]", "required": required}],
+                 inputs=[{"param": "waypoints", "from": source, "output": output}])
+    return _root([rec, route])
+
+
+def test_plan_orders_steps_by_their_data_dependencies():
+    agent = _make_agent()
+    plan = _plan_with_sequence(agent, _with_input())
+    assert plan["type"] == "composite"
+    assert plan["execution_logic"] == [{"type": "Sequence", "from_id": "1", "to_id": "2"}]
+
+
+def test_invalid_input_is_rejected_in_strict_mode():
+    agent = _make_agent({"param_validation": "strict"})
+    plan = _plan_with_sequence(agent, _with_input(output="exhibits", required=False))
+    assert plan["type"] == "leaf_unresolved"
+    assert plan["reason"] == "Planner produced invalid action parameters."
+    assert [i["issue"] for i in plan["debug"]["param_issues"]] == ["invalid_input"]

@@ -17,7 +17,12 @@ import uuid
 
 from src.app_helper import get_agent_config
 from src.llm.client import LLMClient
-from src.kg.action_store import CLEAR_ACTION_CONDITIONS, write_action_conditions
+from src.kg.action_store import (
+    CLEAR_ACTION_CONDITIONS,
+    CLEAR_ACTION_OUTPUTS,
+    write_action_conditions,
+    write_action_outputs,
+)
 from src.kg.adapter_neo4j import Neo4jBoltAdapter
 
 
@@ -29,6 +34,9 @@ ACTIONS = [
         "desc": "引導訪客前往指定展區或攤位位置",
         "topic": "navigation.request",
         "task": "LocateExhibit",
+        "outputs": [
+            {"key": "current_location", "name": "抵達位置", "desc": "引導結束後訪客所在的位置", "type": "string"},
+        ],
         "preconditions": [
             {"key": "zone_state", "arg": "target_name", "op": "not_in", "value": ["Closed"],
              "desc": "目的地所在區域沒有關閉"},
@@ -80,6 +88,11 @@ ACTIONS = [
              "required": False, "example": 60},
             {"key": "avoid_crowd", "name": "避開人潮", "desc": "是否優先避開壅擠區", "type": "bool",
              "required": False, "example": True},
+            {"key": "waypoints", "name": "途經點", "desc": "要依序參觀的展區或攤位", "type": "list[string]",
+             "required": False, "example": ["B_AI1", "B_RB1"]},
+        ],
+        "outputs": [
+            {"key": "waypoints", "name": "途經點", "desc": "路線依序經過的展區或攤位", "type": "list[string]"},
         ],
     },
     {
@@ -131,6 +144,11 @@ ACTIONS = [
         "desc": "根據訪客興趣推薦適合的展區或活動",
         "topic": "info.request",
         "task": "RecommendExhibits",
+        "outputs": [
+            {"key": "booths", "name": "推薦攤位", "desc": "推薦的攤位 id，依推薦順序", "type": "list[string]"},
+            {"key": "exhibitors", "name": "推薦展商", "desc": "推薦攤位的展商名稱", "type": "list[string]"},
+            {"key": "avoid_zones", "name": "建議避開", "desc": "目前擁擠、建議避開的區域", "type": "list[string]"},
+        ],
         "params": [
             {"key": "interests", "name": "興趣偏好", "desc": "偏好主題/關鍵字", "type": "list[string]",
              "required": True, "example": ["智慧製造", "ESG"]},
@@ -146,6 +164,11 @@ ACTIONS = [
         "desc": "說明各展區目前的人潮與擁擠狀況",
         "topic": "info.request",
         "task": "CrowdStatus",
+        "outputs": [
+            {"key": "crowded_zones", "name": "擁擠區", "desc": "目前擁擠的區域", "type": "list[string]"},
+            {"key": "normal_zones", "name": "正常區", "desc": "人潮正常的區域", "type": "list[string]"},
+            {"key": "sparse_zones", "name": "稀疏區", "desc": "人潮稀疏的區域", "type": "list[string]"},
+        ],
         "params": [
             {"key": "target_area", "name": "區域", "desc": "要查詢人潮的展區/館別", "type": "string",
              "required": False, "example": "B館"},
@@ -159,6 +182,9 @@ ACTIONS = [
         "desc": "在移動過程中即時提供方向與轉彎提示",
         "topic": "navigation.request",
         "task": "NavigationAssistance",
+        "outputs": [
+            {"key": "current_location", "name": "抵達位置", "desc": "引導結束後訪客所在的位置", "type": "string"},
+        ],
         "preconditions": [
             {"key": "zone_state", "arg": "destination", "op": "not_in", "value": ["Closed"],
              "desc": "目的地所在區域沒有關閉"},
@@ -232,6 +258,7 @@ def main():
     kg.write("MATCH (a:Action) DETACH DELETE a")
     kg.write("MATCH (p:Param) DETACH DELETE p")
     kg.write(CLEAR_ACTION_CONDITIONS)
+    kg.write(CLEAR_ACTION_OUTPUTS)
 
     print(">>> Seeding Actions (embedding in Action.description_embedding)")
 
@@ -320,6 +347,7 @@ def main():
             preconditions=action.get("preconditions", []),
             effects=action.get("effects", []),
         )
+        write_action_outputs(kg.write, aid, action.get("outputs", []))
 
         print(f"  - Seeded Action: {name} (task={task}, topic={topic}, params={len(params)}, dim={len(emb)})")
 

@@ -25,7 +25,8 @@ CONTEXT = {
 def test_prompt_without_context_is_unchanged():
     prompt = PromptBuilder().build_prompt("帶我去 AI 區", ACTIONS)
     assert "Replanning" not in prompt
-    assert 'set `scheduled_start` to "".\n\n### Output Format' in prompt
+    assert "Results Available from Earlier Steps" not in prompt
+    assert 'Otherwise set `inputs` to [].\n\n### Output Format' in prompt
     assert prompt == PromptBuilder().build_prompt("帶我去 AI 區", ACTIONS, None)
 
 
@@ -36,8 +37,8 @@ def test_prompt_with_context_includes_reason_failed_step_and_env_facts():
     assert "env change affects node a" in prompt
     assert 'LocateExhibit {"target_name": "AI_Tech_Area"} (state=obsolete, error=area closed)' in prompt
     assert '"zone": "AI_Tech_Area", "state": "Closed"' in prompt
-    assert "8. **Respect the Environment**" in prompt
-    assert "9. **Do Not Repeat Failures**" in prompt
+    assert "9. **Respect the Environment**" in prompt
+    assert "10. **Do Not Repeat Failures**" in prompt
 
 
 def test_large_env_facts_are_truncated():

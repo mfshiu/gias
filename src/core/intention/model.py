@@ -73,7 +73,7 @@ class Intention:
     attempts: int = 0                                  # 開始規劃的次數（被搶占後續做會再加一）
     reason: str = ""                                   # 最近一次狀態轉換的原因
     plan_steps: list[dict[str, Any]] = field(default_factory=list)
-    result: dict[str, Any] | None = None               # 結束時的執行摘要（ok、message、state_counts）
+    result: dict[str, Any] | None = None               # 結束時的執行摘要（ok、message、response、state_counts）
     history: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:

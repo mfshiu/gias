@@ -243,10 +243,11 @@ class GuideAgent(NavigationAgent):
         cancel_token: CancelToken | None = None,
         task_id: str | None = None,
         adaptations: AdaptationLog | None = None,
+        outputs: dict[str, Any] | None = None,
     ) -> tuple[str, bool]:
         if task not in MOVE_TASKS:
             return super().execute_task(
-                task, params, cancel_token=cancel_token, task_id=task_id, adaptations=adaptations,
+                task, params, cancel_token=cancel_token, task_id=task_id, adaptations=adaptations, outputs=outputs,
             )
 
         if _truthy(params.get("avoid_crowded", False)):
@@ -264,6 +265,8 @@ class GuideAgent(NavigationAgent):
                                      adaptations=adaptations):
                     return (f"{task} 已取消，停在 {self.position}", True)
                 reached.append(target)
+            if outputs is not None:
+                outputs.update({"reached": list(reached), "current_location": self.position})
             return (f"已抵達 {' → '.join(reached)}（目前位置 {self.position}）", False)
         finally:
             self._move_lock.release()

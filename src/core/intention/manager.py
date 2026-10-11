@@ -46,9 +46,11 @@ def plan_steps(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def _result_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    response = summary.get("response")
     return {
         "ok": bool(summary.get("ok")),
         "message": summary.get("message"),
+        "response": response.get("text") if isinstance(response, dict) else None,
         "state_counts": summary.get("state_counts"),
         "stopped": bool(summary.get("stopped")),
     }

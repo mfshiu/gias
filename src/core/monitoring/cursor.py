@@ -333,7 +333,7 @@ class PlanCursor:
         if _is_atomic_node(node):
             # 單獨 atomic 當 root 的情況（沒進到 composite 層）
             rec = self._records.get(str(node.get("id", "")))
-            if rec is not None and rec.state == NodeState.PENDING:
+            if rec is not None and rec.state == NodeState.PENDING and not self._waiting_for_inputs(rec):
                 ready.append(rec)
             return
 
@@ -353,7 +353,8 @@ class PlanCursor:
                     if rec is None:
                         continue
                     if rec.state == NodeState.PENDING:
-                        ready.append(rec)
+                        if not self._waiting_for_inputs(rec):
+                            ready.append(rec)
                         level_has_unfinished = True
                     elif rec.state == NodeState.IN_FLIGHT:
                         level_has_unfinished = True
@@ -373,6 +374,14 @@ class PlanCursor:
             if level_has_unfinished:
                 # 該 composite 的下一層尚未到，停在這裡
                 return
+
+    def _waiting_for_inputs(self, rec: NodeRecord) -> bool:
+        """節點的 inputs 來源（前面步驟）是否還沒結束；規劃時已排好先後，這裡是給直接傳入的計畫的保險。"""
+        for spec in rec.node.get("inputs") or []:
+            source = self._records.get(str(spec.get("from", "")))
+            if source is not None and source.state not in TERMINAL_STATES:
+                return True
+        return False
 
     def _composite_has_unfinished(self, node: dict[str, Any]) -> bool:
         if not isinstance(node, dict):

@@ -159,6 +159,21 @@ def _coerce(value: Any, spec: dict[str, Any], enum_alias: dict[str, str]) -> tup
     return value, None
 
 
+def coerce_value(value: Any, spec: dict[str, Any], enum_alias: dict[str, str] | None = None) -> tuple[Any, str | None]:
+    """依 schema 轉換單一值（用於前面步驟傳來的值）；只有一個元素的清單給非清單參數時取該元素。"""
+    ptype = str(spec.get("type") or "").strip().lower()
+    if isinstance(value, (list, tuple)) and len(value) == 1 and not (ptype.startswith("list") or ptype == "array"):
+        value = value[0]
+    return _coerce(value, spec, enum_alias or {})
+
+
+def match_param_key(raw_key: Any, schema: list[dict[str, Any]] | None) -> tuple[str, bool]:
+    """把 LLM 寫的參數名稱對應到 schema 的 key；回傳 (key, 是否在 schema 內)。"""
+    by_norm = {_key_norm(p["key"]): p["key"] for p in schema or [] if p.get("key")}
+    key = by_norm.get(_key_norm(raw_key))
+    return (key, True) if key else (to_snake(str(raw_key or "")), False)
+
+
 def normalize_params(
     raw: dict[str, Any],
     schema: list[dict[str, Any]] | None,

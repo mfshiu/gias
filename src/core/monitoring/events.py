@@ -14,6 +14,10 @@ from typing import Any
 
 # 派工前前置條件不成立時的錯誤前綴：trigger 不重試（狀態不變重試必然失敗），直接升級為重規劃
 PRECONDITION_FAILED = "precondition failed"
+# 派工前取不到前面步驟的輸出（來源失敗或沒有產生該輸出）時的錯誤前綴：同樣不重試
+INPUT_UNAVAILABLE = "input unavailable"
+# 重試也不會成功的失敗
+NON_RETRYABLE_ERRORS = (PRECONDITION_FAILED, INPUT_UNAVAILABLE)
 
 
 class NodeState(str, Enum):
