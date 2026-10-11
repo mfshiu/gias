@@ -56,9 +56,15 @@ class BlackboardAgent(Agent):
         agent_config: dict[str, Any],
         *,
         poll_interval_sec: float = 2.0,
+        broadcast_events: bool | None = None,
     ):
+        """broadcast_events：是否把每個變動廣播到 blackboard.event.*（預設依 [blackboard] broadcast_events，
+        未設定為 true）。關閉後 watcher 只掃描有人訂閱的 Label。"""
         self.agent_config = agent_config
         self.poll_interval = poll_interval_sec
+        if broadcast_events is None:
+            broadcast_events = bool((agent_config.get("blackboard") or {}).get("broadcast_events", True))
+        self.broadcast_events = broadcast_events
 
         self._kg: Optional[Neo4jBoltAdapter] = None
 
@@ -103,19 +109,23 @@ class BlackboardAgent(Agent):
             subscription_manager=self.sub_manager,
             watcher_id=self._bb_agent_id,
             poll_interval_sec=self.poll_interval,
+            only_subscribed=True,
             logger=logger,
         )
         self.watcher.add_default_targets()
 
-        self.sub_manager.subscribe(
-            pattern="*/*/*",
-            callback=self._on_any_event,
-            subscriber_id=self._bb_agent_id,
-            ignore_self=False,
-        )
+        if self.broadcast_events:
+            # 廣播所有變動：所有監控目標都要掃描
+            self.sub_manager.subscribe(
+                pattern="*/*/*",
+                callback=self._on_any_event,
+                subscriber_id=self._bb_agent_id,
+                ignore_self=False,
+            )
 
         self.watcher.start()
-        logger.info("BlackboardAgent watcher started (poll_interval=%.1fs)", self.poll_interval)
+        logger.info("BlackboardAgent watcher started (poll_interval=%.1fs, broadcast=%s)",
+                    self.poll_interval, self.broadcast_events)
 
     def on_disconnected(self) -> None:
         """Agent 斷線時停止監控"""
@@ -173,6 +183,12 @@ class BlackboardAgent(Agent):
                 subscriber_id=requester_id,
                 ignore_self=data.get("ignore_self", True),
             )
+            if self.watcher is not None:
+                # 新被訂閱的 Label 先建立快取：回覆訂閱成功後的變動都會通知
+                try:
+                    self.watcher.prime_watched()
+                except Exception as e:
+                    logger.warning("BlackboardAgent: priming watcher failed: %s", e)
             logger.info("BlackboardAgent: %s subscribed to %s, sub_id=%s", requester_id, pattern, sub_id)
             result = {"ok": True, "subscription_id": sub_id}
             logger.debug("BlackboardAgent._handle_control returning: %s", result)
@@ -225,10 +241,16 @@ class BlackboardAgent(Agent):
         try:
             result = self.kg.write(cypher, params)
             logger.verbose("BlackboardAgent write by %s: %s", origin_id, cypher[:100])
+            self._notify_watcher()
             return {"ok": True, "result": result}
         except Exception as e:
             logger.warning("BlackboardAgent write error: %s", e)
             return {"ok": False, "error": str(e)}
+
+    def _notify_watcher(self) -> None:
+        """寫入後讓 watcher 立即偵測變動（不必等下一輪輪詢）。"""
+        if self.watcher is not None:
+            self.watcher.notify_change()
 
     def _handle_query(self, data: dict[str, Any]) -> dict[str, Any]:
         """處理 KG 查詢請求"""
@@ -376,6 +398,7 @@ class BlackboardAgent(Agent):
 
             logger.info("BlackboardAgent received observation from %s: type=%s, saliency=%d, entities=%d",
                        observer_id, obs_type, saliency, len(entities))
+            self._notify_watcher()
             
             return {
                 "ok": True,
@@ -424,6 +447,7 @@ def main() -> None:
     )
     print(f"\n=== BlackboardAgent starting: {agent.agent_id} ===")
     print(f"  poll_interval: {poll_interval}s")
+    print(f"  broadcast_events: {agent.broadcast_events}")
     print(f"  control_topic: {BlackboardAgent.CONTROL_TOPIC}")
     print(f"  event_topic_prefix: {BlackboardAgent.EVENT_TOPIC_PREFIX}")
     print()

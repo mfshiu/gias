@@ -141,3 +141,13 @@ class SubscriptionManager:
     def count(self) -> int:
         with self._lock:
             return len(self._subscriptions)
+
+    def watches_label(self, label: str) -> bool:
+        """是否有訂閱可能收到這個 Label 的事件（topic 第一段為該 Label 或 *）。
+
+        節點事件 <Label>/<id>/<property> 與關係事件 <Label>/<REL>/<TargetLabel> 的第一段都是來源 Label；
+        BlackboardWatcher 據此只掃描有人訂閱的 Label。
+        """
+        with self._lock:
+            patterns = [str(s.pattern) for s in self._subscriptions.values()]
+        return any(p.split("/", 1)[0] in ("*", label) for p in patterns)

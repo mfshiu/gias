@@ -170,7 +170,7 @@ python -X utf8 -m navigation_scenario.run_sensors --seed 42 --bb-poll 1.5
 | 旗標 | 預設 | 說明 |
 |------|------|------|
 | `--seed` | 42 | RNG 種子，可重現感測序列 |
-| `--bb-poll` | 2.0 | BlackboardAgent watcher 輪詢秒數 |
+| `--bb-poll` | 2.0 | BlackboardAgent watcher 輪詢秒數（偵測直接寫入 Neo4j 的變動；感測器經 BlackboardAgent 的 `write` / `observe` 寫入後會立即偵測，不必等這個週期） |
 | `--log-level` | （讀 `LOG_LEVEL` 或 `DEBUG`） | 覆寫日誌等級，可選 `VERBOSE` / `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 ### 日誌等級
