@@ -99,7 +99,7 @@
 | **L-05** | 閉環／監測 | 進度訊息只寫進 log，沒有用在監測判斷 | [monitor.py:84](../src/core/monitoring/monitor.py#L84) | 已修正（165b73b） |
 | **C-09** | 正確性 | `BudgetGuard.exhausted()` 只看 deadline，和它的註解、文件描述不符 | [budget.py:73](../src/core/monitoring/budget.py#L73) | 已修正（9749343） |
 | **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 已修正（877f6be） |
-| **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 已修正 |
+| **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 已修正（0037a5c） |
 | **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 未處理 |
 | **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 未處理 |
 | **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 未處理 |
@@ -371,7 +371,7 @@ BlackboardAgent 預設仍把每個變動廣播到 `blackboard.event.*`（`[black
 
 **仍未涵蓋**：快取只在記憶體中，process 結束即消失；若校準工具或 benchmark 需要跨次執行重用，可再加上寫入檔案的快取。
 
-### 2026-10-12：P-05
+### 2026-10-12：P-05（commit 0037a5c）
 
 | 項目 | 修正前 | 修正後 |
 |---|---|---|
