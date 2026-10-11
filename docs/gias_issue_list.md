@@ -100,7 +100,7 @@
 | **C-09** | 正確性 | `BudgetGuard.exhausted()` 只看 deadline，和它的註解、文件描述不符 | [budget.py:73](../src/core/monitoring/budget.py#L73) | 已修正（9749343） |
 | **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 已修正（877f6be） |
 | **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 已修正（0037a5c） |
-| **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 已修正 |
+| **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 已修正（450b8ee） |
 | **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 未處理 |
 | **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 未處理 |
 | **E-03** | 工程品質 | 有空殼或沒被使用的模組：`llm/cache`、`router`、`policy`、`observability`，`schemas/plan.py`、`eval.py`，`tasks/planning_tasks.py`、`evaluation_tasks.py`，`kg/client.py` | `src/llm/`、`src/kg/` | 未處理 |
@@ -412,7 +412,7 @@ L-01 已讓 IntentionalAgent 依 `DomainProfile.env_subscriptions` 覆寫前綴�
 
 新增測試 10 個（`tests/monitoring/test_trigger.py`：pattern 語意、預設不綁領域、其他領域（會議室）的事件、可設定的實體欄位），並以突變測試確認 6 個關鍵行為在還原後會被測試抓到。修改 3 個依賴舊預設的既有測試（改為明確設定 pattern）。全部非 integration 測試（不含 `tests/kg`）共 983 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
-### 2026-10-12：G-03
+### 2026-10-12：G-03（commit 450b8ee）
 
 | 項目 | 修正前 | 修正後 | 主要檔案 |
 |---|---|---|---|
