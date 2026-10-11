@@ -1,6 +1,7 @@
 # src/llm/config.py
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -42,7 +43,8 @@ def load_llm_runtime_config(agent_config: Dict[str, Any]) -> LLMRuntimeConfig:
     openai_cfg = llm_cfg.get("openai") or {}
     ollama_cfg = llm_cfg.get("ollama") or {}
 
-    openai_api_key = openai_cfg.get("api_key")
+    # 設定檔沒有金鑰時讀 OPENAI_API_KEY 環境變數（S-03：金鑰不必寫在 gias.toml）
+    openai_api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY") or None
     openai_embed_model = openai_cfg.get("embed_model", "text-embedding-3-small") if openai_cfg else None
 
     ollama_base_url = ollama_cfg.get("base_url", "http://localhost:11434") if ollama_cfg else None

@@ -90,7 +90,7 @@
 | **G-01** | 通用性 | 只寫死了 info、navigation 兩個頻道，未知 topic 一律送往 info | [_executor_utils.py:31](../src/agents/_executor_utils.py#L31) | 新增一種執行端 Agent 就要改核心程式 | 已修正（4e5ea49） |
 | **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 已修正（ca497df） |
 | **S-02** | 安全 | MQTT 用明文帳密，沒有 TLS 或 ACL | `gias.toml` | 訊息可被竊聽或偽造 | 已修正（c11bdc6；AgentFlow 端未 commit） |
-| **S-03** | 安全 | OpenAI API 金鑰以明文存在 `gias.toml`（已在 .gitignore、沒被 git 追蹤） | `gias.toml` | 本機或備份檔（`_bak/*.7z`）外流時金鑰會一起外洩 | 未處理 |
+| **S-03** | 安全 | OpenAI API 金鑰以明文存在 `gias.toml`（已在 .gitignore、沒被 git 追蹤） | `gias.toml` | 本機或備份檔（`_bak/*.7z`）外流時金鑰會一起外洩 | 已修正 |
 
 ## 四、低（11 項）
 
@@ -460,6 +460,23 @@ L-01 已讓 IntentionalAgent 依 `DomainProfile.env_subscriptions` 覆寫前綴�
 - 本次未修改 `gias.toml` 與 broker 實際設定；啟用時依 `docs/mqtt_security.md` 設定 broker 與 `gias.toml`
 - 未在真實的 TLS broker 上連線測試
 - 所有元件共用一個服務帳號；依角色分帳號尚未實作
+
+### 2026-10-12：S-03
+
+機密改由環境變數提供，設定檔只寫參照。說明見 [`docs/secrets.md`](secrets.md)。
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 環境變數參照 | `get_agent_config()` 載入時把設定值中的 `${VAR}` 換成環境變數（dict / list 遞迴）；未設定的變數換成空字串 | `src/app_helper.py` |
+| 明文提醒 | 載入時若 `api_key`、`password`、`token`、`secret`、`keyfile_password` 以明文寫在檔案中，或參照的環境變數未設定，記錄提醒（每個 process、每個設定檔一次；只列鍵名，不輸出值） | `src/app_helper.py` |
+| OpenAI 金鑰 | 設定中沒有 `api_key`（或為空）時讀 `OPENAI_API_KEY` 環境變數；設定中的值優先 | `src/llm/config.py` |
+| 設定範本 | 不含機密的 `gias.example.toml`（所有機密寫成 `${...}`），可放進版本控制 | `gias.example.toml`（新） |
+
+檢查結果：版本控制中沒有被追蹤的金鑰；`_bak/*.7z` 備份只含 `src`，沒有 `gias.toml`（以封存檔清單確認）。
+
+新增測試 5 個（`tests/test_config_secrets.py`），並以突變測試確認 7 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 1032 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+**注意**：本次未修改 `gias.toml`，其中的 MQTT 密碼、OpenAI 金鑰、Neo4j 密碼仍為明文，元件啟動時會出現提醒；依 `docs/secrets.md` §3 搬到環境變數，並更換曾以明文存放的金鑰與密碼。
 
 ---
 

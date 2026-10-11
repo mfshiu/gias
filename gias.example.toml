@@ -1,0 +1,81 @@
+# gias.example.toml
+# GIAS 設定範本：複製成 gias.toml 後依環境調整。
+# 機密（密碼、API 金鑰、黑板金鑰）不要直接寫在檔案裡：寫成 ${環境變數}，載入時換成環境變數的值
+# （見 docs/secrets.md）。gias.toml 已在 .gitignore 中。
+
+# =========================
+# Broker（agentflow 需要 broker_name 與對應設定；TLS 見 docs/mqtt_security.md）
+# =========================
+[broker]
+broker_name = "mqtt01"
+
+[broker.mqtt01]
+broker_type = "mqtt"
+host = "localhost"
+port = 1883
+username = "gias"
+password = "${GIAS_MQTT_PASSWORD}"
+keepalive = 60
+
+# [broker.mqtt01.tls]
+# ca_certs = "C:/certs/gias/ca.crt"
+
+# =========================
+# LLM
+# =========================
+[llm]
+# openai | ollama | mock
+provider = "openai"
+strict_json = true
+timeout_sec = 60
+max_retries = 2
+retry_backoff = 1.5
+retry_jitter = 0.1
+
+[llm.openai]
+# 也可以整行省略：沒有 api_key 時讀 OPENAI_API_KEY 環境變數
+api_key = "${OPENAI_API_KEY}"
+embed_model = "text-embedding-3-small"
+
+# [llm.ollama]
+# base_url = "http://localhost:11434"
+# model = "llama3"
+
+# =========================
+# Knowledge Graph
+# =========================
+[kg]
+type = "neo4j"
+
+[kg.neo4j]
+uri = "bolt://localhost:7687"
+user = "neo4j"
+password = "${NEO4J_PASSWORD}"
+database = "neo4j"
+encrypted = false
+fetch_size = 2000
+timeout_sec = 15
+max_retries = 2
+retry_backoff_sec = 0.5
+connection_timeout_sec = 10
+acquisition_timeout_sec = 10
+
+# 繼承 [kg.neo4j] 連線設定，僅覆寫 database（Neo4j 5.x：需先 CREATE DATABASE）
+[kg.neo4j_blackboard]
+database = "blackboard"
+
+[kg.neo4j_actions]
+database = "actions"
+
+# =========================
+# Blackboard（見 docs/blackboard_agent.md）
+# =========================
+# [blackboard.access]
+# token = "${GIAS_BLACKBOARD_TOKEN}"
+
+# =========================
+# Intent / Planning
+# =========================
+[intent]
+enable_scope_gate = true
+scope_gate_strict = true
