@@ -430,10 +430,14 @@ class IntentionalAgent(Agent):
         return self.matcher.match_actions(intention, **kwargs)
 
     # ------------------------------------------------------------------
-    # plan_intention（與 v1 相同）
+    # plan_intention
     # ------------------------------------------------------------------
     def plan_intention(self, intention: str, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """規劃意圖。context 為重規劃脈絡（見 PlanRepair.build_replan_context），只在重規劃時提供。"""
+        """規劃意圖。context 為重規劃脈絡（見 PlanRepair.build_replan_context），只在重規劃時提供。
+
+        意圖只拆解一次：意圖解析（break_down_intention）拆出的子意圖用來比對動作，
+        也直接成為計畫的第一層（兩個以上時），planner 只為它們綁定動作、參數與先後。
+        """
         norm = self.domain.normalize(intention)
         subs = self.break_down_intention(norm)
 
@@ -446,7 +450,9 @@ class IntentionalAgent(Agent):
                 matched=[s.intent for s, _ in matched_pairs],
             )
 
-        chosen_actions = self.selector.select_actions([s for s, _ in matched_pairs])
+        chosen_actions = self.selector.select_actions(
+            [s for s, _ in matched_pairs], matches=[ms for _, ms in matched_pairs],
+        )
         allowed_action_names = self._extract_allowed_action_names(chosen_actions)
         if not allowed_action_names:
             return self._make_unresolved(
@@ -459,7 +465,8 @@ class IntentionalAgent(Agent):
         if gate_reject is not None:
             return gate_reject
 
-        plan = self._decompose(norm, chosen_actions, context)
+        given = self._given_sub_intents(matched_pairs, chosen_actions)
+        plan = self._decompose(norm, chosen_actions, context, given)
         rejected, param_issues = self._validate_plan(plan, norm, subs, allowed_action_names)
         if rejected is not None:
             return rejected
@@ -469,7 +476,7 @@ class IntentionalAgent(Agent):
         if pre.blocking(findings):
             logger.warning("Plan violates preconditions; replanning once: %s",
                            [pre.describe(f) for f in pre.blocking(findings)])
-            plan = self._decompose(norm, chosen_actions, self._precondition_context(findings, context))
+            plan = self._decompose(norm, chosen_actions, self._precondition_context(findings, context), given)
             rejected, param_issues = self._validate_plan(plan, norm, subs, allowed_action_names)
             if rejected is not None:
                 return rejected
@@ -495,10 +502,38 @@ class IntentionalAgent(Agent):
         logger.debug(f"Generated plan: {json.dumps(plan, indent=2, ensure_ascii=False)}")
         return plan
 
-    def _decompose(self, norm: str, chosen_actions: Any, context: dict[str, Any] | None) -> dict[str, Any]:
+    def _decompose(
+        self, norm: str, chosen_actions: Any, context: dict[str, Any] | None,
+        given: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
         if context:
-            return self.planner.plan(norm, chosen_actions, context=context)
-        return self.planner.plan(norm, chosen_actions)
+            kwargs["context"] = context
+        if given:
+            kwargs["given_sub_intents"] = given
+        return self.planner.plan(norm, chosen_actions, **kwargs)
+
+    def _given_sub_intents(
+        self, matched_pairs: list[tuple[SubIntent, list[Any]]], chosen_actions: Any
+    ) -> list[dict[str, Any]] | None:
+        """意圖解析拆出的子意圖（兩個以上時）作為計畫第一層，附上抽出的實體與各自比對到的動作。
+
+        只有一個子意圖（或解析失敗而以整句代替）時不限制，由 planner 照常拆解。
+        """
+        if any((s.raw or {}).get("fallback") for s, _ in matched_pairs):
+            return None
+        given: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for s, ms in matched_pairs:
+            if s.intent in seen:
+                continue
+            seen.add(s.intent)
+            names = {getattr(getattr(m, "action", m), "name", None) for m in ms or []}
+            signatures = [k for k in chosen_actions if self._action_name_from_sig(k) in names] \
+                if isinstance(chosen_actions, dict) else []
+            slots = {k: v for k, v in (s.slots or {}).items() if not str(k).startswith("_") and v not in (None, "")}
+            given.append({"id": str(len(given) + 1), "intent": s.intent, "slots": slots, "actions": signatures})
+        return given if len(given) >= 2 else None
 
     def _validate_plan(
         self, plan: dict[str, Any], norm: str, subs: list[SubIntent], allowed_action_names: set[str]

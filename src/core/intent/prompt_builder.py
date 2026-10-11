@@ -63,6 +63,31 @@ def _format_replan_context(context: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_given(given: list[dict[str, Any]], feedback: dict[str, Any] | None) -> str:
+    """意圖解析已拆出的子意圖：這一層照它們綁定動作與先後，不再自行重拆。"""
+    lines = [
+        "### Sub-intents (already identified)",
+        "The current intent has already been split into the sub-intents below, with the entities taken from the "
+        "user's words and the atomic intents matched to each. Use exactly these as your `sub_intents`: keep their "
+        "ids and order, and do not add, merge, split or drop any. For each one, decide `is_atomic`, `action` and "
+        "`inputs` (a sub-intent that needs several actions is not atomic and will be decomposed later), and give "
+        "the `relationships` between them.",
+    ]
+    for g in given:
+        detail = f'- "{g.get("id")}": {g.get("intent")}'
+        if g.get("slots"):
+            detail += " | entities " + json.dumps(g["slots"], ensure_ascii=False, default=str)
+        if g.get("actions"):
+            detail += " | matched: " + ", ".join(g["actions"])
+        lines.append(detail)
+    if feedback:
+        lines.append(
+            f"Your previous answer did not keep these sub-intents (missing ids {feedback.get('missing') or []}, "
+            f"unexpected ids {feedback.get('extra') or []}). Return exactly the ids listed above."
+        )
+    return "\n".join(lines)
+
+
 def _format_upstream(sources: list[dict[str, Any]]) -> str:
     """在這部分之前執行的步驟與其輸出（planner 的 upstream），讓下層步驟以 inputs 引用。"""
     lines = [
@@ -87,6 +112,8 @@ class PromptBuilder:
         sections = []
         if context.get("replan") or context.get("env_facts") or context.get("completed_steps"):
             sections.append(_format_replan_context(context))
+        if context.get("given_sub_intents"):
+            sections.append(_format_given(context["given_sub_intents"], context.get("given_sub_intents_feedback")))
         if context.get("upstream_outputs"):
             sections.append(_format_upstream(context["upstream_outputs"]))
         context_section = "".join(f"\n{s}\n" for s in sections)

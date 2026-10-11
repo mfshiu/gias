@@ -70,14 +70,17 @@ class ActionSelector:
 
 
     # Given a list of sub-intentions, find the best matching action for each, and return a dictionary of action signatures and their descriptions for use in prompt construction.
-    def select_actions(self, sub_intentions: list[SubIntent] | list[str]) -> dict[str, str]:
+    # matches：已比對好的結果（與 sub_intentions 一一對應）；給了就直接使用，不再比對一次
+    def select_actions(
+        self, sub_intentions: list[SubIntent] | list[str], matches: list[list[ActionMatch]] | None = None
+    ) -> dict[str, str]:
         action_map: dict[str, ActionMatch] = {}
 
-        for si in sub_intentions:
+        for i, si in enumerate(sub_intentions):
             text = si.intent if isinstance(si, SubIntent) else str(si)
-            matches = self.matcher.match_actions(text)
+            matches_i = matches[i] if matches is not None else self.matcher.match_actions(text)
 
-            for match in matches:
+            for match in matches_i:
                 name = match.action.name
                 if name not in action_map or match.score > action_map[name].score:
                     action_map[name] = match

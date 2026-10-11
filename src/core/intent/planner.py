@@ -152,6 +152,49 @@ class RecursivePlanner:
             self.logger.debug("Failed to get outputs for %s: %s", action_name, e)
             return []
 
+    def _align_to_given(self, intent, available_actions, call_context: dict, result_json: dict, current_node: dict) -> dict:
+        """拆解結果必須保留意圖解析給的子意圖（同一組 id）。
+
+        不一致時帶著差異重問一次；仍不一致就以給定的子意圖為準：保留對應的項目、
+        補回缺少的子意圖（交給下一層拆解）、移除多出的項目，並記在 debug.sub_intent_alignment。
+        """
+        given = call_context["given_sub_intents"]
+        expected = [str(g["id"]) for g in given]
+
+        def diff(result: dict) -> tuple[list[str], list[str]]:
+            ids = [str(s.get("id") or "").strip() for s in result.get("sub_intents") or [] if isinstance(s, dict)]
+            return [i for i in expected if i not in ids], [i for i in ids if i not in expected]
+
+        missing, extra = diff(result_json)
+        if not missing and not extra:
+            return result_json
+        self.logger.warning("Decomposition changed the given sub-intents (missing %s, extra %s); asking again",
+                            missing, extra)
+        retry_context = {**call_context, "given_sub_intents_feedback": {"missing": missing, "extra": extra}}
+        retry = self.decomposer.decompose(intent, available_actions, context=retry_context)
+        if retry:
+            result_json = retry
+            missing, extra = diff(result_json)
+            if not missing and not extra:
+                return result_json
+
+        by_id: dict[str, dict] = {}
+        for s in result_json.get("sub_intents") or []:
+            if isinstance(s, dict):
+                by_id.setdefault(str(s.get("id") or "").strip(), s)
+        aligned = [
+            by_id.get(str(g["id"])) or {"id": str(g["id"]), "intent": g["intent"], "is_atomic": False,
+                                        "action": "", "atomic_source": None}
+            for g in given
+        ]
+        relationships = [
+            r for r in result_json.get("relationships") or []
+            if isinstance(r, dict) and str(r.get("from_id")) in expected and str(r.get("to_id")) in expected
+        ]
+        self.logger.warning("Aligned decomposition to the given sub-intents: restored %s, dropped %s", missing, extra)
+        current_node["debug"] = {"sub_intent_alignment": {"restored": missing, "dropped": extra}}
+        return {**result_json, "sub_intents": aligned, "relationships": relationships}
+
     def _get_agent_by_action(self, action_name: str) -> dict | None:
         """
         依 Action 名稱查詢實作該 Action 的 Agent 資訊。
@@ -176,9 +219,11 @@ class RecursivePlanner:
         return None
 
     def plan(self, intent, available_actions, *, depth=0, max_depth=4, scheduled_start="N/A", node_id="root",
-             context=None, upstream=None):
+             context=None, upstream=None, given_sub_intents=None):
         """遞迴拆解 intent。context 是重規劃脈絡（重規劃原因、環境事實），會傳給每一層的拆解；
-        upstream 是在這部分之前執行的步驟與其輸出，讓下層的步驟以 inputs 引用（見 dataflow.py）。"""
+        upstream 是在這部分之前執行的步驟與其輸出，讓下層的步驟以 inputs 引用（見 dataflow.py）。
+        given_sub_intents：意圖解析已拆出的子意圖（[{id, intent, slots, actions}]），只用於這一層：
+        LLM 照這些子意圖綁定動作與先後，不再自行重拆（見 _align_to_given）。"""
         indent = "    " * depth
         prefix = "└── " if depth > 0 else "[ROOT] "
 
@@ -201,7 +246,12 @@ class RecursivePlanner:
 
         print(f"{indent}{prefix}處理意圖: {intent}")
 
-        call_context = {**(context or {}), "upstream_outputs": upstream} if upstream else context
+        extra = {}
+        if upstream:
+            extra["upstream_outputs"] = upstream
+        if given_sub_intents:
+            extra["given_sub_intents"] = given_sub_intents
+        call_context = {**(context or {}), **extra} if extra else context
         if call_context:
             result_json = self.decomposer.decompose(intent, available_actions, context=call_context)
         else:
@@ -209,6 +259,8 @@ class RecursivePlanner:
         if not result_json:
             current_node["error"] = "Decomposition failed"
             return current_node
+        if given_sub_intents:
+            result_json = self._align_to_given(intent, available_actions, call_context, result_json, current_node)
 
         sub_intents = result_json.get("sub_intents", [])
 
