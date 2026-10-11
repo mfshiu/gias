@@ -103,7 +103,7 @@
 | **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 已修正（450b8ee） |
 | **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 已修正（b01fdf7） |
 | **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 已修正（a873e97） |
-| **E-03** | 工程品質 | 有空殼或沒被使用的模組：`llm/cache`、`router`、`policy`、`observability`，`schemas/plan.py`、`eval.py`，`tasks/planning_tasks.py`、`evaluation_tasks.py`，`kg/client.py` | `src/llm/`、`src/kg/` | 已修正 |
+| **E-03** | 工程品質 | 有空殼或沒被使用的模組：`llm/cache`、`router`、`policy`、`observability`，`schemas/plan.py`、`eval.py`，`tasks/planning_tasks.py`、`evaluation_tasks.py`，`kg/client.py` | `src/llm/`、`src/kg/` | 已修正（379b75d） |
 | **E-04** | 工程品質 | `print` 和 logger 混用，log 層級無法統一控制 | `planner.py`、`src/agents/*` | 未處理 |
 | **E-05** | 工程品質 | OpenAI 聊天模型寫死成 `gpt-4.1-mini`，無法從 toml 設定 | [openai_provider.py:41](../src/llm/providers/openai_provider.py#L41) | 未處理 |
 | **E-06** | 工程品質 | 沒有 CI（`.github/` 是空的），548 個離線測試沒有自動執行 | `.github/` | 未處理 |
@@ -507,7 +507,7 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 
 **注意**：hook 需要在每個 clone 執行一次 `git config core.hooksPath .githooks` 才會啟用；本次未修改 repo 的 git 設定，也未搬移 `_bak/`。
 
-### 2026-10-12：E-03
+### 2026-10-12：E-03（commit 379b75d）
 
 依確認的方向：刪除未使用的模組，包含 KGClient。
 
