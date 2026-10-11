@@ -31,6 +31,7 @@ from .topic import BlackboardTopic, TopicPattern
 from .event import BlackboardEvent, ChangeAction
 from .subscription import SubscriptionManager
 from .watcher import BlackboardWatcher, WatchTarget
+from .projection import ObservationProjection, projections_from_config
 
 
 logger = init_logging()
@@ -57,14 +58,26 @@ class BlackboardAgent(Agent):
         *,
         poll_interval_sec: float = 2.0,
         broadcast_events: bool | None = None,
+        projections: list[ObservationProjection] | tuple[ObservationProjection, ...] | None = None,
+        watch_targets: list[WatchTarget] | None = None,
     ):
         """broadcast_events：是否把每個變動廣播到 blackboard.event.*（預設依 [blackboard] broadcast_events，
-        未設定為 true）。關閉後 watcher 只掃描有人訂閱的 Label。"""
+        未設定為 true）。關閉後 watcher 只掃描有人訂閱的 Label。
+        projections：觀察結果同步到領域節點的規則（見 projection.py）；不給時依 [blackboard] projections
+        （預設集名稱清單，未設定為 ["venue"]）。
+        watch_targets：watcher 監看的節點與關係；不給時依 [[blackboard.watch_targets]]，未設定則用
+        BlackboardWatcher.add_default_targets()。"""
         self.agent_config = agent_config
         self.poll_interval = poll_interval_sec
+        bb_cfg = agent_config.get("blackboard") or {}
         if broadcast_events is None:
-            broadcast_events = bool((agent_config.get("blackboard") or {}).get("broadcast_events", True))
+            broadcast_events = bool(bb_cfg.get("broadcast_events", True))
         self.broadcast_events = broadcast_events
+        self.projections = tuple(projections) if projections is not None else projections_from_config(
+            bb_cfg.get("projections"))
+        if watch_targets is None and bb_cfg.get("watch_targets") is not None:
+            watch_targets = [WatchTarget.from_config(item) for item in bb_cfg["watch_targets"]]
+        self.watch_targets = watch_targets
 
         self._kg: Optional[Neo4jBoltAdapter] = None
 
@@ -112,7 +125,11 @@ class BlackboardAgent(Agent):
             only_subscribed=True,
             logger=logger,
         )
-        self.watcher.add_default_targets()
+        if self.watch_targets is None:
+            self.watcher.add_default_targets()
+        else:
+            for target in self.watch_targets:
+                self.watcher.add_watch_target(target)
 
         if self.broadcast_events:
             # 廣播所有變動：所有監控目標都要掃描
@@ -267,49 +284,25 @@ class BlackboardAgent(Agent):
             return {"ok": False, "error": str(e)}
 
     def _apply_observer_updates(self, obs_type: str, entities: list[dict[str, Any]]) -> None:
-        """
-        展場觀察者：將觀察結果同步至 Zone/Booth 等 KG 節點，
-        供行動者代理查詢。
-        """
-        if obs_type == "pedestrian_flow":
-            for e in entities:
-                if e.get("entity_type") == "Zone":
-                    zone_name = e.get("label") or (e.get("entity_id", "").replace("zone_", ""))
-                    crowd_level = (e.get("properties") or {}).get("crowd_level")
-                    if zone_name and crowd_level:
-                        try:
-                            self.kg.write(
-                                """
-                                MATCH (z:Zone {name: $zone_name})
-                                OPTIONAL MATCH (z)-[r:CURRENT_STATE]->()
-                                DELETE r
-                                WITH z
-                                MATCH (st:State {status_name: $crowd_level})
-                                CREATE (z)-[:CURRENT_STATE {updated_at: datetime()}]->(st)
-                                """,
-                                {"zone_name": zone_name, "crowd_level": crowd_level},
-                            )
-                            logger.debug("BlackboardAgent updated Zone %s crowd=%s", zone_name, crowd_level)
-                        except Exception as ex:
-                            logger.warning("BlackboardAgent Zone update failed: %s", ex)
+        """依投影規則把觀察結果同步到黑板上的領域節點（例：人流 → Zone 人潮狀態），供行動者代理查詢。
 
-        elif obs_type == "facility_event":
-            for e in entities:
-                if e.get("entity_type") == "Booth":
-                    booth_id = e.get("entity_id")
-                    status = (e.get("properties") or {}).get("status")
-                    if booth_id and status:
-                        try:
-                            self.kg.write(
-                                """
-                                MATCH (b:Booth {id: $booth_id})
-                                SET b.status = $status, b.updated_at = datetime()
-                                """,
-                                {"booth_id": booth_id, "status": status},
-                            )
-                            logger.debug("BlackboardAgent updated Booth %s status=%s", booth_id, status)
-                        except Exception as ex:
-                            logger.warning("BlackboardAgent Booth update failed: %s", ex)
+        規則依領域設定（self.projections，見 projection.py）；單筆失敗只記 warning，不影響其他實體。
+        """
+        for e in entities:
+            if not isinstance(e, dict):
+                continue
+            for proj in self.projections:
+                if not proj.applies_to(obs_type, e):
+                    continue
+                statement = proj.build(e)
+                if statement is None:
+                    continue
+                cypher, params = statement
+                try:
+                    self.kg.write(cypher, params)
+                    logger.debug("BlackboardAgent projected %s %s: %s", obs_type, proj.entity_type, params)
+                except Exception as ex:
+                    logger.warning("BlackboardAgent %s update failed: %s", proj.entity_type, ex)
 
     def _handle_observe(self, data: dict[str, Any], observer_id: str) -> dict[str, Any]:
         """
@@ -317,7 +310,7 @@ class BlackboardAgent(Agent):
         
         將觀察結果轉換為 KG 節點/關係並寫入，
         同時發佈對應的變動事件。
-        展場觀察者（pedestrian_flow, facility_event）會同步更新 Zone/Booth。
+        符合投影規則的實體會同步更新領域節點（例：展場的 Zone / Booth，見 projection.py）。
         """
         observation = data.get("observation")
         if not observation or not isinstance(observation, dict):
@@ -377,7 +370,7 @@ class BlackboardAgent(Agent):
                 }
                 self.kg.write(entity_cypher, entity_params)
 
-            # 展場觀察者：同步更新 Zone 人潮、Booth 狀態至 KG
+            # 依投影規則同步更新領域節點（例：展場的 Zone 人潮、Booth 狀態）
             self._apply_observer_updates(obs_type, entities)
 
             self.publish_change(

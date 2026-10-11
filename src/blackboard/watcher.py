@@ -34,6 +34,18 @@ class WatchTarget:
     watch_properties: list[str] = field(default_factory=list)
     watch_relationships: list[str] = field(default_factory=list)
 
+    @classmethod
+    def from_config(cls, item: dict[str, Any]) -> "WatchTarget":
+        """[[blackboard.watch_targets]] 的一筆：label、id_property、properties、relationships。"""
+        if not isinstance(item, dict) or not item.get("label"):
+            raise ValueError(f"watch target needs a label: {item!r}")
+        return cls(
+            label=str(item["label"]),
+            id_property=str(item.get("id_property", "id")),
+            watch_properties=[str(p) for p in item.get("properties") or []],
+            watch_relationships=[str(r) for r in item.get("relationships") or []],
+        )
+
 
 def _q(name: str) -> str:
     """Cypher 識別字（Label、屬性、關係型別）加上反引號。"""

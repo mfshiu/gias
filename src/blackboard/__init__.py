@@ -16,6 +16,7 @@ from .watcher import BlackboardWatcher
 from .subscription import SubscriptionManager
 from .agent import BlackboardAgent
 from .client import query_blackboard, get_crowd_hotspots, get_open_booths
+from .projection import ObservationProjection, register_projection_preset
 
 __all__ = [
     "BlackboardTopic",
@@ -28,4 +29,6 @@ __all__ = [
     "query_blackboard",
     "get_crowd_hotspots",
     "get_open_booths",
+    "ObservationProjection",
+    "register_projection_preset",
 ]
