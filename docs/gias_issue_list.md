@@ -82,7 +82,7 @@
 | **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 已修正（059947d） |
 | **C-07** | 正確性 | 參數用正規表示式從 LLM 字串解析，不依 `params_schema` 驗證型別、enum 或必填 | [planner.py:23](../src/core/intent/planner.py#L23) | 例如 `Interests=null` 會被當成字串 "null" 傳下去 | 已修正（059947d） |
 | **C-08** | 正確性 | 判斷環境事件影響哪些節點時用子字串比對 | [trigger.py:219](../src/core/monitoring/trigger.py#L219) | "A1" 會誤中 "A12"，觸發不必要的重規劃 | 已修正（934c9c9） |
-| **A-03** | 架構落差 | 步驟之間不能傳遞資料，也沒有把結果彙整回覆給使用者的步驟 | [planner.py:161](../src/core/intent/planner.py#L161) | 多步驟任務無法串接，例如「推薦展品」的結果傳不到「規劃路線」 | 已修正 |
+| **A-03** | 架構落差 | 步驟之間不能傳遞資料，也沒有把結果彙整回覆給使用者的步驟 | [planner.py:161](../src/core/intent/planner.py#L161) | 多步驟任務無法串接，例如「推薦展品」的結果傳不到「規劃路線」 | 已修正（f98b410） |
 | **A-04** | 架構落差 | 同一個意圖被 LLM 拆兩次：`parse_intent` 的結果只用來比對動作，planner 又重新拆一次 | [intentional_agent.py:226](../src/core/intentional_agent.py#L226)、[intentional_agent.py:250](../src/core/intentional_agent.py#L250) | 兩次結果可能不一致，成本也加倍 | 未處理 |
 | **P-01** | 效能 | `select_actions` 不帶 slots 又比對一次，而且每個動作都再查一次 KG（N+1 查詢） | [action_selector.py:59](../src/core/intent/action_selector.py#L59)、[action_selector.py:32](../src/core/intent/action_selector.py#L32) | 規劃延遲變長，embedding 費用增加 | 未處理 |
 | **P-02** | 效能 | 每次比對都執行 `SHOW INDEXES` 加 `awaitIndex`；讀不到維度時還會 DROP 索引再重建 | [action_store.py:93](../src/kg/action_store.py#L93)、[action_matcher.py:235](../src/core/intent/action_matcher.py#L235) | 多了往返延遲，正式環境中索引可能被反覆重建 | 未處理 |
@@ -269,7 +269,7 @@ L-04 已讓 `adapted` 進度事件用於監測判斷；這次讓其他進度事�
 - 支援效果，但 seed 目前沒有宣告（場館狀態都由環境決定）
 - 意圖之間的衝突偵測（`conflicts_between_intents`）仍未使用，留給多意圖同時執行時處理（見 A-01）
 
-### 2026-10-11：A-03
+### 2026-10-11：A-03（commit f98b410）
 
 步驟之間的資料傳遞採「LLM 宣告引用、程式代入實際值」：Action KG 宣告每個 Action 的輸出，LLM 拆解時以 `inputs` 把參數接到前面步驟的輸出，派工前才代入實際值；意圖結束時再把各步驟的結果彙整成回覆。完整說明見 [`docs/step_dataflow.md`](step_dataflow.md)。
 
