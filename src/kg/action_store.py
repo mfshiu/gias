@@ -1,9 +1,15 @@
 # src/kg/action_store.py
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Dict, List
 
 from .cache import TTLCache
+
+logger = logging.getLogger(__name__)
+
+ACTION_DESC_INDEX = "action_desc_vec"
 
 _PARAM_COLUMNS = """
             p.key AS key,
@@ -21,6 +27,8 @@ class ActionStore:
         """cache_ttl_sec：Action 的參數、輸出、前置條件的快取時效（秒）；≤ 0 表示每次都查 KG。"""
         self.kg = kg_adapter
         self._cache = TTLCache(cache_ttl_sec)
+        # 已確認可用的向量索引維度；比對時不再重複檢查（見 ensure_action_desc_index）
+        self._index_ready_dim: int | None = None
 
     def clear_cache(self) -> None:
         """重新 seed Action KG 後可呼叫，立即讀到新資料。"""
@@ -101,48 +109,59 @@ class ActionStore:
                 state = (row or {}).get("state")
                 if str(state).upper() == "ONLINE":
                     return
+                time.sleep(0.2)
 
     def ensure_action_desc_index(self, dimensions: int) -> None:
         """
-        確保 action_desc_vec 存在且 vector.dimensions 正確。
-        若維度不符（或無法判斷），會 DROP + CREATE。
-        並等待 index ONLINE。
+        確認 action_desc_vec 可以查詢（比對動作前呼叫）。
+
+        同一個維度只在第一次（或上次向量查詢失敗後）檢查，之後不再查詢 KG：
+        - 不存在：建立（IF NOT EXISTS）並等待 ONLINE
+        - 存在但還不是 ONLINE：等待 ONLINE
+        - 維度與查詢向量不同：記錄錯誤，不刪除。索引裡的向量是 seed 時算的，重建索引不會改變它們；
+          換了 embedding 模型時請重新執行 seed（seed 會重建索引）
+        - 讀不到維度：視為可用
+        比對時不會刪除或重建索引。
         """
-        name = "action_desc_vec"
+        dimensions = int(dimensions)
+        if self._index_ready_dim == dimensions:
+            return
+        name = ACTION_DESC_INDEX
         idx = self._show_index(name)
 
-        need_recreate = False
         if idx:
             existing_dim = self._extract_vector_dimensions(idx)
+            if existing_dim is not None and int(existing_dim) != dimensions:
+                logger.error(
+                    "Vector index %s has %s dimensions but query embeddings have %s; "
+                    "re-run the action seed to rebuild the embeddings and the index.",
+                    name, existing_dim, dimensions,
+                )
+            if str(idx.get("state") or "").upper() != "ONLINE":
+                self._await_index_online(name)
+            self._index_ready_dim = dimensions
+            return
 
-            # ✅ 抓不到就重建（你目前情境更需要「確保一致」）
-            if existing_dim is None or int(existing_dim) != int(dimensions):
-                need_recreate = True
-
-        if need_recreate:
-            # ✅ 加 IF EXISTS，避免不存在就噴錯；DROP/CREATE 為寫入操作
-            self.kg.query(f"DROP INDEX {name} IF EXISTS", {}, write=True)
-            idx = None
-
-        if not idx:
-            # ✅ 加 IF NOT EXISTS，避免重跑測試噴錯；CREATE INDEX 為寫入操作
-            self.kg.query(
-                f"""
-                CREATE VECTOR INDEX {name} IF NOT EXISTS
-                FOR (a:Action) ON (a.description_embedding)
-                OPTIONS {{
-                  indexConfig: {{
-                    `vector.dimensions`: $d,
-                    `vector.similarity_function`: 'cosine'
-                  }}
-                }}
-                """,
-                {"d": int(dimensions)},
-                write=True,
-            )
+        # 不存在：建立
+        # ✅ 加 IF NOT EXISTS，避免重跑測試噴錯；CREATE INDEX 為寫入操作
+        self.kg.query(
+            f"""
+            CREATE VECTOR INDEX {name} IF NOT EXISTS
+            FOR (a:Action) ON (a.description_embedding)
+            OPTIONS {{
+              indexConfig: {{
+                `vector.dimensions`: $d,
+                `vector.similarity_function`: 'cosine'
+              }}
+            }}
+            """,
+            {"d": int(dimensions)},
+            write=True,
+        )
 
         # ✅ 最關鍵：等 ONLINE
         self._await_index_online(name)
+        self._index_ready_dim = dimensions
 
     # ---------------------------
     # Params schema
@@ -252,9 +271,10 @@ class ActionStore:
         若 adapter 回空，fallback 直接用 db.index.vector.queryNodes。
         """
         # 1) primary
+        primary_failed = False
         try:
             rows = self.kg.vector_query_nodes(
-                index_name="action_desc_vec",
+                index_name=ACTION_DESC_INDEX,
                 vector=vector,
                 top_k=top_k,
                 min_score=min_score,
@@ -264,6 +284,7 @@ class ActionStore:
                 return rows
         except Exception:
             rows = []
+            primary_failed = True
 
         # 2) fallback (Neo4j 5+)
         try:
@@ -281,13 +302,16 @@ class ActionStore:
             return self.kg.query(
                 cypher,
                 {
-                    "index_name": "action_desc_vec",
+                    "index_name": ACTION_DESC_INDEX,
                     "top_k": int(top_k),
                     "vector": vector,
                     "min_score": float(min_score),
                 },
             )
         except Exception:
+            if primary_failed:
+                # 兩種查詢都失敗（例如索引被刪除）：下次比對時重新檢查索引
+                self._index_ready_dim = None
             return []
 
 

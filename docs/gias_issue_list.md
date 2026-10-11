@@ -85,7 +85,7 @@
 | **A-03** | 架構落差 | 步驟之間不能傳遞資料，也沒有把結果彙整回覆給使用者的步驟 | [planner.py:161](../src/core/intent/planner.py#L161) | 多步驟任務無法串接，例如「推薦展品」的結果傳不到「規劃路線」 | 已修正（f98b410） |
 | **A-04** | 架構落差 | 同一個意圖被 LLM 拆兩次：`parse_intent` 的結果只用來比對動作，planner 又重新拆一次 | [intentional_agent.py:226](../src/core/intentional_agent.py#L226)、[intentional_agent.py:250](../src/core/intentional_agent.py#L250) | 兩次結果可能不一致，成本也加倍 | 已修正（33ffb33） |
 | **P-01** | 效能 | `select_actions` 不帶 slots 又比對一次，而且每個動作都再查一次 KG（N+1 查詢） | [action_selector.py:59](../src/core/intent/action_selector.py#L59)、[action_selector.py:32](../src/core/intent/action_selector.py#L32) | 規劃延遲變長，embedding 費用增加 | 已修正（7edc41f） |
-| **P-02** | 效能 | 每次比對都執行 `SHOW INDEXES` 加 `awaitIndex`；讀不到維度時還會 DROP 索引再重建 | [action_store.py:93](../src/kg/action_store.py#L93)、[action_matcher.py:235](../src/core/intent/action_matcher.py#L235) | 多了往返延遲，正式環境中索引可能被反覆重建 | 未處理 |
+| **P-02** | 效能 | 每次比對都執行 `SHOW INDEXES` 加 `awaitIndex`；讀不到維度時還會 DROP 索引再重建 | [action_store.py:93](../src/kg/action_store.py#L93)、[action_matcher.py:235](../src/core/intent/action_matcher.py#L235) | 多了往返延遲，正式環境中索引可能被反覆重建 | 已修正 |
 | **P-03** | 效能 | 黑板每 2 秒輪詢一次，做全量比對 | [watcher.py:49](../src/blackboard/watcher.py#L49) | 有延遲，資料量大時無法擴充 | 未處理 |
 | **G-01** | 通用性 | 只寫死了 info、navigation 兩個頻道，未知 topic 一律送往 info | [_executor_utils.py:31](../src/agents/_executor_utils.py#L31) | 新增一種執行端 Agent 就要改核心程式 | 未處理 |
 | **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 未處理 |
@@ -320,6 +320,22 @@ LLM 呼叫次數不變（解析、ScopeGate、根層拆解各一次），但比�
 快取（`src/kg/cache.py` 的 `TTLCache`）有時效：設定 `[intent] action_cache_ttl_sec`（預設 300 秒，≤ 0 不快取）；常駐服務在重新 seed 後，最晚這麼久會讀到新資料，也可呼叫 `ActionStore.clear_cache()`。查詢失敗不快取。動作清單的參數順序改為依宣告順序（與原本查詢相同），KG 查詢失敗時動作清單改為不列參數，不再中斷規劃。
 
 新增測試 9 個（`tests/intent/test_action_cache.py`），並以突變測試確認 8 個關鍵行為在還原後會被測試抓到。為配合批次查詢修改 1 個既有測試（假 KG 改為回應批次查詢）。全部非 integration 測試（不含 `tests/kg`）共 930 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+### 2026-10-12：P-02
+
+`ActionStore.ensure_action_desc_index`（比對動作前呼叫）改為：
+
+| 情況 | 修正前 | 修正後 |
+|---|---|---|
+| 每次比對 | `SHOW INDEXES` + `awaitIndex` | 同一個維度只在第一次檢查，之後不查 KG |
+| 索引已 ONLINE | 仍呼叫 `awaitIndex` | 不等待 |
+| 讀不到維度 | DROP 後重建 | 視為可用 |
+| 維度與查詢向量不同 | DROP 後重建 | 記錄錯誤、不刪除，提示重新執行 seed（索引裡的向量是 seed 時算的，比對時重建索引也不會改變它們；seed 本身會在維度不符時重建索引） |
+| 索引不存在 | 建立並等待 | 相同（`CREATE ... IF NOT EXISTS`，非破壞性） |
+
+比對時不再刪除或重建索引。向量查詢（主要與備援兩種）都失敗時（例如索引被刪除），下次比對會重新檢查索引；`awaitIndex` 不可用時的輪詢改為每 0.2 秒一次，不再連續送出 30 次查詢。
+
+新增測試 9 個（`tests/intent/test_vector_index.py`），並以突變測試確認 6 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 939 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 ---
 
