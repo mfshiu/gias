@@ -68,7 +68,7 @@
 | **C-04** | 正確性 | 節點沒有逾時機制，`deadline_sec` 預設為 None | [intentional_agent.py:613](../src/core/intentional_agent.py#L613)、[budget.py:20](../src/core/monitoring/budget.py#L20) | 執行端掛掉或訊息遺失時，迴圈會永遠等待 | 已修正（8b0cbce） |
 | **C-10** | 正確性 | 環境事件或失敗觸發子樹／整體重規劃時，先取消執行中的步驟才產生新計畫；重規劃失敗時被取消的步驟被標為 OBSOLETE 而無聲丟棄，且 OBSOLETE 不計入成敗，可能回報成功 | [intentional_agent.py:`_apply_decision`](../src/core/intentional_agent.py) | 「先去 A 再去 B」：往 A 的途中重規劃失敗，A 被丟掉、B 完成後仍回報 ok=True | 已修正（934c9c9） |
 | **A-01** | 架構落差 | 意圖只是一個字串：沒有 Intention 模型和生命週期狀態，不支援多意圖、優先序或衝突管理，Agent 執行完就結束 | [intentional_agent.py:70](../src/core/intentional_agent.py#L70)、[intentional_agent.py:136](../src/core/intentional_agent.py#L136) | 「跨時間維持意圖」與 Bratman 意圖理論的主張沒有落實 | 已修正（08db68b） |
-| **A-02** | 架構落差 | 前置條件驗證沒有實作：Action KG 沒有前置條件和效果，`preconditions_by_action`、`conflicts_between_intents` 已寫好卻從未被呼叫 | [queries.py:211](../src/kg/queries.py#L211)、[queries.py:233](../src/kg/queries.py#L233) | 摘要所說「KG-RAG 提供前置條件驗證」與程式不符；LLM 產生的計畫沒有符號層面的驗證 | 已修正 |
+| **A-02** | 架構落差 | 前置條件驗證沒有實作：Action KG 沒有前置條件和效果，`preconditions_by_action`、`conflicts_between_intents` 已寫好卻從未被呼叫 | [queries.py:211](../src/kg/queries.py#L211)、[queries.py:233](../src/kg/queries.py#L233) | 摘要所說「KG-RAG 提供前置條件驗證」與程式不符；LLM 產生的計畫沒有符號層面的驗證 | 已修正（5355cf0） |
 | **S-01** | 安全 | `blackboard.control` 會執行任何 MQTT 用戶端送來的 Cypher，沒有白名單也沒有權限控管 | [blackboard/agent.py:212](../src/blackboard/agent.py#L212)、[blackboard/agent.py:232](../src/blackboard/agent.py#L232) | 任何連得上 broker 的人都能讀取或刪除整個黑板 | 未處理 |
 | **E-01** | 工程品質 | 核心監測子系統 `src/core/monitoring/` 還沒加入 git 追蹤，另有約 1,100 行修改未 commit | `src/core/monitoring/` | 程式可能遺失，版本也無法追溯 | 已修正（c2ab5bf） |
 
@@ -247,7 +247,7 @@ L-04 已讓 `adapted` 進度事件用於監測判斷；這次讓其他進度事�
 - 意圖之間的語意衝突偵測（例：兩個意圖目標互相矛盾）；目前靠優先序與搶占處理先後，`conflicts_between_intents` 仍未使用
 - 重啟後自動續做（依決定只標為 interrupted）
 
-### 2026-10-11：A-02
+### 2026-10-11：A-02（commit 5355cf0）
 
 以「LLM 提出計畫、KG 驗證」實作：Action KG 宣告前置條件與效果，計畫在規劃後與派工前各檢查一次。完整說明見 [`docs/action_preconditions.md`](action_preconditions.md)。
 
