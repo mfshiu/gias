@@ -1,0 +1,2 @@
+# commit-msg hook 由 sh 執行，必須是 LF 換行
+.githooks/* text eol=lf

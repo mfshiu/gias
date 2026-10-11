@@ -1,0 +1,48 @@
+#!/bin/sh
+# GIAS commit-msg hook：拒絕不具描述性的 commit 訊息（E-02）。
+# 啟用：git config core.hooksPath .githooks（見 CONTRIBUTING.md）
+#
+# 規則（只檢查第一行，忽略 # 開頭的註解行）：
+# - 至少 10 個位元組（約 10 個英文字母或 4 個中文字）
+# - 必須含有文字，不能只有標點、數字或重複的同一個字元（例：".."、"aaa"）
+# - 不能只是 wip、update、fix、test、tmp、misc、changes、commit、init 這類佔位詞
+# Merge、Revert、fixup!、squash!、amend! 開頭的訊息不檢查。
+
+msg_file="$1"
+subject=$(grep -v '^#' "$msg_file" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' | head -n 1)
+
+case "$subject" in
+    "Merge "* | "Revert "* | "fixup! "* | "squash! "* | "amend! "*) exit 0 ;;
+esac
+
+fail() {
+    echo "commit-msg: $1" >&2
+    echo "  subject: \"$subject\"" >&2
+    echo "  Write a short summary of what the commit does, e.g. \"Fix replanning after a closed zone: L-01\"." >&2
+    echo "  See CONTRIBUTING.md (commit messages)." >&2
+    exit 1
+}
+
+[ -n "$subject" ] || fail "the commit message is empty"
+
+bytes=$(printf '%s' "$subject" | wc -c | tr -d ' ')
+[ "$bytes" -ge 10 ] || fail "the subject is too short"
+
+stripped=$(printf '%s' "$subject" | tr -d '[:punct:][:digit:][:space:]')
+[ -n "$stripped" ] || fail "the subject has no words"
+
+first=$(printf '%s' "$stripped" | cut -c1)
+rest=$(printf '%s' "$stripped" | tr -d "$first")
+[ -n "$rest" ] || fail "the subject repeats one character"
+
+lower=$(printf '%s' "$subject" | tr '[:upper:]' '[:lower:]' | sed -e 's/[[:punct:]]*$//')
+case "$lower" in
+    wip | update | updates | updated | fix | fixes | fixed | test | tests | tmp | temp | misc | changes | \
+    commit | init | "init "[0-9]* | "initial commit" | "some changes" | "minor changes" | "small fix" | "more fixes")
+        fail "the subject is a placeholder" ;;
+esac
+
+if [ "$bytes" -gt 100 ]; then
+    echo "commit-msg: warning: the subject is long ($bytes bytes); keep it to one short line and put details in the body." >&2
+fi
+exit 0

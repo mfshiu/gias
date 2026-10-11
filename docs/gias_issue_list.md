@@ -102,7 +102,7 @@
 | **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 已修正（0037a5c） |
 | **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 已修正（450b8ee） |
 | **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 已修正（b01fdf7） |
-| **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 未處理 |
+| **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 已修正 |
 | **E-03** | 工程品質 | 有空殼或沒被使用的模組：`llm/cache`、`router`、`policy`、`observability`，`schemas/plan.py`、`eval.py`，`tasks/planning_tasks.py`、`evaluation_tasks.py`，`kg/client.py` | `src/llm/`、`src/kg/` | 未處理 |
 | **E-04** | 工程品質 | `print` 和 logger 混用，log 層級無法統一控制 | `planner.py`、`src/agents/*` | 未處理 |
 | **E-05** | 工程品質 | OpenAI 聊天模型寫死成 `gpt-4.1-mini`，無法從 toml 設定 | [openai_provider.py:41](../src/llm/providers/openai_provider.py#L41) | 未處理 |
@@ -493,6 +493,19 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 新增測試 18 個（`tests/llm/test_untrusted.py`），並以突變測試確認 12 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 1050 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 **限制**：資料區塊與規則只能降低、不能完全消除 LLM 被誘導的可能；警示是關鍵字比對，可被改寫繞過；尚未以真實 LLM 測試防護效果。
+
+### 2026-10-12：E-02
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 開發流程 | 以 git 取代 7z 備份：分支保存進度、`git stash` 擱置、`git tag` 標記里程碑、`git switch --detach` / `git worktree` 取回舊版、`git diff` 比較版本；`_bak/` 確認版本都在 git 後移到 repo 外封存 | `CONTRIBUTING.md`（新） |
+| Commit 訊息 | 慣例：第一行用祈使句說明做了什麼，對應問題時加編號；內文說明原因。`commit-msg` hook 擋下少於 10 個位元組、只有標點或數字、重複同一字元、或只是 wip / update / fix / test / tmp 等佔位詞的第一行；Merge、Revert、fixup! / squash! 不檢查；第一行超過 100 位元組時只提醒 | `.githooks/commit-msg`（新）、`.gitattributes`（新，hook 保持 LF 換行） |
+
+檢查結果：git 歷史 67 個 commit 中，hook 會擋下的只有早期 9 個（`..`、`aaa`、`Init 2` 等）；這些 commit 已在 GitHub 遠端，改寫需要 force push，因此不更動歷史。
+
+新增測試 23 個（`tests/test_commit_msg_hook.py`，找不到 `sh` 時略過），並以突變測試確認 hook 的 5 條規則在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 1073 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+**注意**：hook 需要在每個 clone 執行一次 `git config core.hooksPath .githooks` 才會啟用；本次未修改 repo 的 git 設定，也未搬移 `_bak/`。
 
 ---
 
