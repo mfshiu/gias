@@ -142,3 +142,18 @@ def get_open_booths(agent: "Agent") -> list[dict[str, Any]]:
     """
     rows = query_blackboard(agent, cypher)
     return [{"id": r.get("id"), "exhibitor": r.get("exhibitor")} for r in rows if r.get("id")]
+
+
+# 展場類 Blackboard 的狀態變數（給 DomainProfile.state_probes 使用，檢查 Action 的前置條件）
+VENUE_STATE_PROBES: dict[str, str] = {
+    # 實體（Zone 名稱，或位於某 Zone 的 POI / Booth id）所在區域目前的狀態：Normal / Crowded / Closed / Sparse
+    "zone_state": (
+        "MATCH (n) WHERE n.id = $arg OR (n:Zone AND n.name = $arg) "
+        "OPTIONAL MATCH (n)-[:LOCATED_IN]->(z:Zone) "
+        "WITH CASE WHEN n:Zone THEN n ELSE z END AS zone "
+        "MATCH (zone)-[:CURRENT_STATE]->(s:State) "
+        "RETURN s.status_name AS value LIMIT 1"
+    ),
+    # 攤位的開放狀態（未設定視為 open）；不是攤位時查無結果
+    "booth_status": "MATCH (b:Booth {id: $arg}) RETURN coalesce(b.status, 'open') AS value LIMIT 1",
+}

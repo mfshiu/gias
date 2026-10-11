@@ -12,6 +12,10 @@ from enum import Enum
 from typing import Any
 
 
+# 派工前前置條件不成立時的錯誤前綴：trigger 不重試（狀態不變重試必然失敗），直接升級為重規劃
+PRECONDITION_FAILED = "precondition failed"
+
+
 class NodeState(str, Enum):
     """atomic 節點的生命週期狀態。
 

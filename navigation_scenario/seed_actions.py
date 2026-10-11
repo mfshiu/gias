@@ -22,6 +22,7 @@ import time
 import uuid
 
 from src.app_helper import get_agent_config
+from src.kg.action_store import CLEAR_ACTION_CONDITIONS, write_action_conditions
 from src.kg.adapter_neo4j import Neo4jBoltAdapter
 from src.llm.client import LLMClient
 
@@ -36,6 +37,12 @@ ACTIONS: list[dict] = [
         "desc": "引導訪客前往指定的展區、攤位或展品位置",
         "topic": "navigation.request",
         "task": "LocateExhibit",
+        "preconditions": [
+            {"key": "zone_state", "arg": "target_name", "op": "not_in", "value": ["Closed"],
+             "desc": "目的地所在區域沒有關閉"},
+            {"key": "booth_status", "arg": "target_name", "op": "ne", "value": "closed",
+             "desc": "目的地攤位開放中"},
+        ],
         "params": [
             {"key": "target_type", "name": "目標類型",
              "desc": "展區/攤位/展品",
@@ -56,6 +63,12 @@ ACTIONS: list[dict] = [
         "desc": "在移動過程中即時提供方向、轉彎與抵達提示",
         "topic": "navigation.request",
         "task": "NavigationAssistance",
+        "preconditions": [
+            {"key": "zone_state", "arg": "destination", "op": "not_in", "value": ["Closed"],
+             "desc": "目的地所在區域沒有關閉"},
+            {"key": "booth_status", "arg": "destination", "op": "ne", "value": "closed",
+             "desc": "目的地攤位開放中"},
+        ],
         "params": [
             {"key": "destination", "name": "目的地",
              "desc": "要前往的目標名稱/編號",
@@ -75,6 +88,12 @@ ACTIONS: list[dict] = [
         "desc": "根據訪客位置、目標與限制（避開擁擠/封閉/特定區域）規劃最佳路線",
         "topic": "navigation.request",
         "task": "SuggestRoute",
+        "preconditions": [
+            {"key": "zone_state", "arg": "destination", "op": "not_in", "value": ["Closed"],
+             "desc": "目的地所在區域沒有關閉"},
+            {"key": "booth_status", "arg": "destination", "op": "ne", "value": "closed",
+             "desc": "目的地攤位開放中"},
+        ],
         "params": [
             {"key": "current_location", "name": "目前位置",
              "desc": "出發點", "type": "string",
@@ -265,6 +284,7 @@ def main() -> int:
 
         kg.write("MATCH (a:Action) DETACH DELETE a", {})
         kg.write("MATCH (p:Param) DETACH DELETE p", {})
+        kg.write(CLEAR_ACTION_CONDITIONS, {})
 
         print(f"  [2] 寫入 {len(ACTIONS)} 個導航相關 action")
         dim: int | None = None
@@ -340,6 +360,12 @@ def main() -> int:
                         "note": "",
                     },
                 )
+
+            write_action_conditions(
+                kg.write, aid,
+                preconditions=action.get("preconditions", []),
+                effects=action.get("effects", []),
+            )
 
             print(
                 f"    - {name} (task={task}, topic={topic}, "

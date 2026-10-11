@@ -75,10 +75,23 @@ class RecursivePlanner:
                 meta["params_schema"] = self.action_store.get_action_params(action_name) or []
             else:
                 meta["params_schema"] = []
+            meta.update(self._get_action_conditions(action_name))
             return meta
         except Exception as e:
             self.logger.debug("Failed to get action metadata for %s: %s", action_name, e)
         return None
+
+    def _get_action_conditions(self, action_name: str) -> dict:
+        """Action 的前置條件與效果；取不到時視為沒有（不影響規劃）。"""
+        getter = getattr(self.action_store, "get_action_conditions", None)
+        if not callable(getter):
+            return {"preconditions": [], "effects": []}
+        try:
+            cond = getter(action_name) or {}
+        except Exception as e:
+            self.logger.debug("Failed to get conditions for %s: %s", action_name, e)
+            cond = {}
+        return {"preconditions": list(cond.get("preconditions") or []), "effects": list(cond.get("effects") or [])}
 
     def _get_agent_by_action(self, action_name: str) -> dict | None:
         """
@@ -190,6 +203,10 @@ class RecursivePlanner:
                     atomic_node["action_id"] = action_meta.get("action_id")
                     atomic_node["params_schema"] = action_meta.get("params_schema", [])
                     # 依 schema 對應名稱、轉型別、檢查 enum 與必填；問題記在 param_issues
+                    if action_meta.get("preconditions"):
+                        atomic_node["preconditions"] = action_meta["preconditions"]
+                    if action_meta.get("effects"):
+                        atomic_node["effects"] = action_meta["effects"]
                     params, issues = normalize_params(raw_params, atomic_node["params_schema"], self.enum_alias)
                     atomic_node["params"] = params
                     if issues:

@@ -68,7 +68,7 @@
 | **C-04** | 正確性 | 節點沒有逾時機制，`deadline_sec` 預設為 None | [intentional_agent.py:613](../src/core/intentional_agent.py#L613)、[budget.py:20](../src/core/monitoring/budget.py#L20) | 執行端掛掉或訊息遺失時，迴圈會永遠等待 | 已修正（8b0cbce） |
 | **C-10** | 正確性 | 環境事件或失敗觸發子樹／整體重規劃時，先取消執行中的步驟才產生新計畫；重規劃失敗時被取消的步驟被標為 OBSOLETE 而無聲丟棄，且 OBSOLETE 不計入成敗，可能回報成功 | [intentional_agent.py:`_apply_decision`](../src/core/intentional_agent.py) | 「先去 A 再去 B」：往 A 的途中重規劃失敗，A 被丟掉、B 完成後仍回報 ok=True | 已修正（934c9c9） |
 | **A-01** | 架構落差 | 意圖只是一個字串：沒有 Intention 模型和生命週期狀態，不支援多意圖、優先序或衝突管理，Agent 執行完就結束 | [intentional_agent.py:70](../src/core/intentional_agent.py#L70)、[intentional_agent.py:136](../src/core/intentional_agent.py#L136) | 「跨時間維持意圖」與 Bratman 意圖理論的主張沒有落實 | 已修正（08db68b） |
-| **A-02** | 架構落差 | 前置條件驗證沒有實作：Action KG 沒有前置條件和效果，`preconditions_by_action`、`conflicts_between_intents` 已寫好卻從未被呼叫 | [queries.py:211](../src/kg/queries.py#L211)、[queries.py:233](../src/kg/queries.py#L233) | 摘要所說「KG-RAG 提供前置條件驗證」與程式不符；LLM 產生的計畫沒有符號層面的驗證 | 未處理 |
+| **A-02** | 架構落差 | 前置條件驗證沒有實作：Action KG 沒有前置條件和效果，`preconditions_by_action`、`conflicts_between_intents` 已寫好卻從未被呼叫 | [queries.py:211](../src/kg/queries.py#L211)、[queries.py:233](../src/kg/queries.py#L233) | 摘要所說「KG-RAG 提供前置條件驗證」與程式不符；LLM 產生的計畫沒有符號層面的驗證 | 已修正 |
 | **S-01** | 安全 | `blackboard.control` 會執行任何 MQTT 用戶端送來的 Cypher，沒有白名單也沒有權限控管 | [blackboard/agent.py:212](../src/blackboard/agent.py#L212)、[blackboard/agent.py:232](../src/blackboard/agent.py#L232) | 任何連得上 broker 的人都能讀取或刪除整個黑板 | 未處理 |
 | **E-01** | 工程品質 | 核心監測子系統 `src/core/monitoring/` 還沒加入 git 追蹤，另有約 1,100 行修改未 commit | `src/core/monitoring/` | 程式可能遺失，版本也無法追溯 | 已修正（c2ab5bf） |
 
@@ -246,6 +246,28 @@ L-04 已讓 `adapted` 進度事件用於監測判斷；這次讓其他進度事�
 - 多個意圖同時執行（目前一次一個；同時執行需要資源仲裁，見 A-02 與後續項目）
 - 意圖之間的語意衝突偵測（例：兩個意圖目標互相矛盾）；目前靠優先序與搶占處理先後，`conflicts_between_intents` 仍未使用
 - 重啟後自動續做（依決定只標為 interrupted）
+
+### 2026-10-11：A-02
+
+以「LLM 提出計畫、KG 驗證」實作：Action KG 宣告前置條件與效果，計畫在規劃後與派工前各檢查一次。完整說明見 [`docs/action_preconditions.md`](action_preconditions.md)。
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| KG schema | `(:Action)-[:REQUIRES]->(:Precondition {key, arg, op, value, desc, severity})`、`(:Action)-[:PRODUCES]->(:Effect {key, arg, value, value_arg, desc})`。`key` 是狀態變數，查詢方式由 `DomainProfile.state_probes`（Cypher）定義；運算子 eq / ne / in / not_in / exists / not_exists；severity 為 block 或 warn。讀取 `ActionStore.get_action_conditions`，seed 用 `write_action_conditions` | `src/kg/action_store.py`、`domain_profile.py`、`blackboard/client.py`（`VENUE_STATE_PROBES`：`zone_state`、`booth_status`） |
+| 檢查邏輯 | 依執行層級走訪計畫，較早步驟的效果成為後續步驟的預期狀態，找不到才查 Blackboard；查無狀態視為 None；黑板無法查詢或缺少參數記為 unverified（不阻擋）；參數值先經 `entity_aliases` 對應到實體 id | `src/core/intent/preconditions.py`（新） |
+| 規劃後 | planner 把前置條件與效果附到 atomic 節點。有 block 級違反時帶著違反原因（`replan.kind = "precondition"`）與環境事實重新規劃一次，仍違反就回傳 `leaf_unresolved`（`Plan violates action preconditions.`）；檢查結果記在 `plan.debug.precondition_findings` | `planner.py`、`intentional_agent.py` |
+| 派工前 | 再檢查一次（已完成步驟的效果視為目前狀態）；不成立時不派工，以 `precondition failed: ...` 失敗交給 trigger，trigger 不重試、直接重規劃子樹 | `intentional_agent.py`、`events.py`、`trigger.py` |
+| 設定 | `[intent.preconditions] enabled`、`check_before_dispatch`（皆預設 true） | `intentional_agent.py` |
+| Seed | 導航 LocateExhibit / NavigationAssistance / SuggestRoute 與展覽 LocateExhibit / NavigationAssistance：目的地區域未關閉、攤位開放（block）；展覽 ExplainExhibit：攤位開放（warn） | `navigation_scenario/seed_actions.py`、`tests/seed_actions_with_embeddings/seed_actions_simple.py` |
+
+`queries.preconditions_by_action` 的 schema 說明已更新為上述格式（仍供 `KGClient.check_preconditions` 使用）；IntentionalAgent 改經 ActionStore 一併讀取前置條件與效果。
+
+新增測試 27 個（檢查邏輯與 KG 讀寫 19、規劃 5、監測迴圈與 trigger 3），並以突變測試確認關鍵測試在還原後會失敗（不做修正重規劃、不做派工前檢查、前置條件失敗仍重試、忽略計畫中的效果、派工時忽略已完成步驟的效果、planner 未附前置條件）。全部非 integration 測試（不含 `tests/kg`）共 867 個通過、10 個略過。另有兩項在修正前即存在、與本項無關的問題：`tests/kg` 的 17 個錯誤（patch 目標 `kg.client`、`kg.adapter_neo4j` 不存在）、`test_log_colors_visual` 1 個失敗（log_helper）。
+
+**注意與仍未涵蓋**：
+- seed 須重新執行才會把前置條件寫進 Action KG（seed 會清空並重建 Action KG）；尚未在真實的 Neo4j / Blackboard 上執行
+- 支援效果，但 seed 目前沒有宣告（場館狀態都由環境決定）
+- 意圖之間的衝突偵測（`conflicts_between_intents`）仍未使用，留給多意圖同時執行時處理（見 A-01）
 
 ---
 

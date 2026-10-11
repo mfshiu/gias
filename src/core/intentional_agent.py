@@ -46,6 +46,7 @@ from src.core.intent.prompt_builder import PromptBuilder
 from src.core.intent.llm_decomposer import LLMDecomposer
 from src.core.intent.planner import RecursivePlanner
 from src.core.intent.scope_gate import ScopeGate
+from src.core.intent import preconditions as pre
 from src.core.intention import (
     TOPIC_INTENTION_CANCEL,
     TOPIC_INTENTION_QUERY,
@@ -86,6 +87,7 @@ from src.core.monitoring import (
     find_duplicate_node_ids,
 )
 from src.core.monitoring.trigger import TriggerConfig
+from src.core.monitoring.events import PRECONDITION_FAILED
 from src.blackboard.client import (
     subscribe_blackboard,
     subscriber_topic,
@@ -93,6 +95,12 @@ from src.blackboard.client import (
     unsubscribe_blackboard,
     write_blackboard,
 )
+
+
+def _has_preconditions(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    return bool(node.get("preconditions")) or any(_has_preconditions(c) for c in node.get("sub_plans") or [])
 
 
 # ----------------------------------------------------------------------
@@ -155,6 +163,8 @@ class IntentionalAgent(Agent):
         # ---- 意圖管理（A-01）--------------------------------------------
         # 執行時派工用的 dispatcher（None 表示經 broker publish；測試可注入）
         self.execution_dispatcher: Callable[[dict[str, Any], dict[str, Any]], None] | None = None
+        self._alias_index: dict[str, str] | None = None
+        self._bb_down_until = 0.0
         self._completed_steps: dict[str, list[dict[str, Any]]] = {}
         self.intentions = IntentionManager(
             run_intention=self._run_intention,
@@ -424,81 +434,162 @@ class IntentionalAgent(Agent):
         if gate_reject is not None:
             return gate_reject
 
-        if context:
-            plan = self.planner.plan(norm, chosen_actions, context=context)
-        else:
-            plan = self.planner.plan(norm, chosen_actions)
+        plan = self._decompose(norm, chosen_actions, context)
+        rejected, param_issues = self._validate_plan(plan, norm, subs, allowed_action_names)
+        if rejected is not None:
+            return rejected
 
-        illegal_atoms = self._find_illegal_atomic_actions(plan, allowed_action_names)
-        if illegal_atoms:
-            return self._make_unresolved(
-                intent=norm, subs=subs,
-                reason="Planner produced actions outside allowed set.",
-                matched=[s.intent for s in subs],
-                extra_debug={
-                    "allowed_actions": sorted(allowed_action_names),
-                    "illegal_atomic_nodes": illegal_atoms,
-                },
-            )
-
-        unexecutable = self._find_unexecutable_nodes(plan)
-        if unexecutable:
-            return self._make_unresolved(
-                intent=norm, subs=subs,
-                reason="Planner produced nodes that cannot be dispatched.",
-                matched=[s.intent for s in subs],
-                extra_debug={
-                    "allowed_actions": sorted(allowed_action_names),
-                    "unexecutable_nodes": unexecutable,
-                },
-            )
-
-        duplicate_ids = find_duplicate_node_ids(plan)
-        if duplicate_ids:
-            return self._make_unresolved(
-                intent=norm, subs=subs,
-                reason="Planner produced duplicate node ids.",
-                matched=[s.intent for s in subs],
-                extra_debug={
-                    "allowed_actions": sorted(allowed_action_names),
-                    "duplicate_node_ids": duplicate_ids,
-                },
-            )
-
-        cycles = find_dependency_cycles(plan)
-        if cycles:
-            return self._make_unresolved(
-                intent=norm, subs=subs,
-                reason="Planner produced cyclic Sequence dependencies.",
-                matched=[s.intent for s in subs],
-                extra_debug={
-                    "allowed_actions": sorted(allowed_action_names),
-                    "dependency_cycles": cycles,
-                },
-            )
-
-        param_issues = self._collect_param_issues(plan)
-        if param_issues:
-            blocking = [i for i in param_issues if i["issue"] in self._BLOCKING_PARAM_ISSUES]
-            if blocking and self._param_validation_mode() == "strict":
+        # LLM 提出計畫、KG 驗證：前置條件不成立時，帶著違反原因重新規劃一次
+        findings = self._check_plan_preconditions(plan)
+        if pre.blocking(findings):
+            logger.warning("Plan violates preconditions; replanning once: %s",
+                           [pre.describe(f) for f in pre.blocking(findings)])
+            plan = self._decompose(norm, chosen_actions, self._precondition_context(findings, context))
+            rejected, param_issues = self._validate_plan(plan, norm, subs, allowed_action_names)
+            if rejected is not None:
+                return rejected
+            findings = self._check_plan_preconditions(plan)
+            if pre.blocking(findings):
                 return self._make_unresolved(
                     intent=norm, subs=subs,
-                    reason="Planner produced invalid action parameters.",
+                    reason="Plan violates action preconditions.",
                     matched=[s.intent for s in subs],
                     extra_debug={
                         "allowed_actions": sorted(allowed_action_names),
-                        "param_issues": param_issues,
+                        "precondition_findings": findings,
                     },
                 )
-            logger.warning("Plan has parameter issues (intent.param_validation=warn): %s", param_issues)
 
         plan.setdefault("debug", {})
         plan["debug"]["sub_intentions"] = [s.intent for s in subs]
         plan["debug"]["allowed_actions"] = sorted(allowed_action_names)
         if param_issues:
             plan["debug"]["param_issues"] = param_issues
+        if findings:
+            plan["debug"]["precondition_findings"] = findings
         logger.debug(f"Generated plan: {json.dumps(plan, indent=2, ensure_ascii=False)}")
         return plan
+
+    def _decompose(self, norm: str, chosen_actions: Any, context: dict[str, Any] | None) -> dict[str, Any]:
+        if context:
+            return self.planner.plan(norm, chosen_actions, context=context)
+        return self.planner.plan(norm, chosen_actions)
+
+    def _validate_plan(
+        self, plan: dict[str, Any], norm: str, subs: list[SubIntent], allowed_action_names: set[str]
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """結構與參數驗證；回傳 (被拒絕時的 leaf_unresolved 或 None, 參數問題)。"""
+
+        def reject(reason: str, **debug: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            return self._make_unresolved(
+                intent=norm, subs=subs, reason=reason, matched=[s.intent for s in subs],
+                extra_debug={"allowed_actions": sorted(allowed_action_names), **debug},
+            ), []
+
+        illegal_atoms = self._find_illegal_atomic_actions(plan, allowed_action_names)
+        if illegal_atoms:
+            return reject("Planner produced actions outside allowed set.", illegal_atomic_nodes=illegal_atoms)
+        unexecutable = self._find_unexecutable_nodes(plan)
+        if unexecutable:
+            return reject("Planner produced nodes that cannot be dispatched.", unexecutable_nodes=unexecutable)
+        duplicate_ids = find_duplicate_node_ids(plan)
+        if duplicate_ids:
+            return reject("Planner produced duplicate node ids.", duplicate_node_ids=duplicate_ids)
+        cycles = find_dependency_cycles(plan)
+        if cycles:
+            return reject("Planner produced cyclic Sequence dependencies.", dependency_cycles=cycles)
+
+        param_issues = self._collect_param_issues(plan)
+        if param_issues:
+            blocking = [i for i in param_issues if i["issue"] in self._BLOCKING_PARAM_ISSUES]
+            if blocking and self._param_validation_mode() == "strict":
+                return reject("Planner produced invalid action parameters.", param_issues=param_issues)
+            logger.warning("Plan has parameter issues (intent.param_validation=warn): %s", param_issues)
+        return None, param_issues
+
+    # ------------------------------------------------------------------
+    # 前置條件（A-02）
+    # ------------------------------------------------------------------
+    def _preconditions_config(self) -> dict[str, Any]:
+        section = ((self.agent_config or {}).get("intent") or {}).get("preconditions")
+        return section if isinstance(section, dict) else {}
+
+    def _check_plan_preconditions(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        if not self._preconditions_config().get("enabled", True) or not _has_preconditions(plan):
+            return []
+        return pre.check_plan(plan, self._state_probe(), resolve=self._resolve_entity)
+
+    def _precondition_context(self, findings: list[dict[str, Any]], context: dict[str, Any] | None) -> dict[str, Any]:
+        """重新規劃用的脈絡：列出違反前置條件的步驟（保留原本脈絡中的步驟與環境事實）。"""
+        ctx = dict(context or {})
+        prior = dict(ctx.get("replan") or {})
+        steps = [
+            {"id": f["node_id"], "task": f["task"],
+             "params": {f["arg"]: f["arg_value"]} if f.get("arg") else {},
+             "state": "invalid", "error": f"{PRECONDITION_FAILED}: {pre.describe(f)}"}
+            for f in pre.blocking(findings)
+        ]
+        reason = "the previous plan violates action preconditions; choose actions or targets whose preconditions hold"
+        ctx["replan"] = {
+            "kind": "precondition",
+            "reason": f"{prior['reason']}; {reason}" if prior.get("reason") else reason,
+            "affected_steps": list(prior.get("affected_steps") or []) + steps,
+        }
+        if "env_facts" not in ctx and self.domain.env_fact_queries:
+            facts = self._collect_env_facts()
+            if facts:
+                ctx["env_facts"] = facts
+        return ctx
+
+    def _state_probe(self) -> pre.Probe:
+        """依 DomainProfile.state_probes 經黑板代理查詢狀態；同一次檢查內快取，黑板無法查詢時暫停 30 秒。"""
+        cache: dict[tuple[str, Any], tuple[bool, Any]] = {}
+        probes = self.domain.state_probes or {}
+
+        def probe(key: str, arg: Any) -> tuple[bool, Any]:
+            ck = (key, str(arg))
+            if ck in cache:
+                return cache[ck]
+            cypher = probes.get(key)
+            if not cypher or time.monotonic() < self._bb_down_until:
+                return False, None
+            rows = try_query_blackboard(self, cypher, {"arg": arg}, timeout=self._bb_timeout())
+            if rows is None:
+                self._bb_down_until = time.monotonic() + 30.0
+                return False, None
+            cache[ck] = (True, rows[0].get("value") if rows else None)
+            return cache[ck]
+
+        return probe
+
+    def _resolve_entity(self, value: Any) -> Any:
+        """把參數值（可能是中文名稱或別名）對應到實體 id；對應不到就原樣回傳。"""
+        if not isinstance(value, str):
+            return value
+        if self._alias_index is None:
+            index: dict[str, str] = {}
+            for entity, aliases in (self.domain.entity_aliases or {}).items():
+                for name in [entity, *aliases]:
+                    index.setdefault("".join(str(name).lower().split()), entity)
+            self._alias_index = index
+        return self._alias_index.get("".join(value.lower().split()), value)
+
+    def _dispatch_precondition_failure(self, rec, cursor: PlanCursor) -> str | None:
+        """派工前再檢查一次前置條件（狀態可能在規劃後改變）；不成立時回傳錯誤訊息。"""
+        node = rec.node
+        cfg = self._preconditions_config()
+        if not node.get("preconditions") or not cfg.get("enabled", True) or not cfg.get("check_before_dispatch", True):
+            return None
+        overlay: dict[tuple[str, str], Any] = {}
+        done = sorted((r for r in cursor.all_records() if r.state == NodeState.DONE), key=lambda r: r.finished_at or 0)
+        for r in done:   # 已完成步驟的效果視為目前狀態
+            pre.apply_effects(r.node, overlay, resolve=self._resolve_entity)
+        findings = pre.check_node(node, self._state_probe(), overlay=overlay, resolve=self._resolve_entity)
+        warnings = [f for f in findings if f["status"] == "violated" and f["severity"] != "block"]
+        if warnings:
+            logger.info("Precondition warnings for node %s: %s", rec.node_id, [pre.describe(f) for f in warnings])
+        failed = pre.blocking(findings)
+        return f"{PRECONDITION_FAILED}: " + "; ".join(pre.describe(f) for f in failed) if failed else None
 
     # ------------------------------------------------------------------
     # plan_intention helpers
@@ -1099,6 +1190,17 @@ class IntentionalAgent(Agent):
         if is_missing_task(node.get("task")):
             logger.warning("Dispatch skipped: node=%s has no bound task", rec.node_id)
             cursor.mark_failed(rec.node_id, "node has no bound task; not dispatched")
+            return
+        failure = self._dispatch_precondition_failure(rec, cursor)
+        if failure:
+            # 不派工；以失敗結果交給監測迴圈，trigger 會直接升級為重規劃（不重試）
+            task_id = new_task_id(prefix=str(rec.node_id))
+            cursor.mark_dispatched(rec.node_id, task_id=task_id)
+            monitor.bind_task(task_id, rec.node_id)
+            logger.warning("Not dispatching node %s: %s", rec.node_id, failure)
+            monitor.on_action_result("precondition", {
+                "task_id": task_id, "ok": False, "error": failure, "task": node.get("task"),
+            })
             return
         topic_raw = node.get("topic")
         topic_name = resolve_request_topic(topic_raw)

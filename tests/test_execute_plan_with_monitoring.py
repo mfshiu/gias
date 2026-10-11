@@ -865,3 +865,47 @@ def test_heartbeats_keep_long_running_step_alive():
     assert result["ok"] is True
     assert len(dispatched) == 1                      # 沒有因逾時而重派
     assert result["results"][0]["progress"]["note"] == "step 8"
+
+
+# ----------------------------------------------------------------------
+# A-02：派工前再檢查前置條件
+# ----------------------------------------------------------------------
+_ZONE_OPEN = {"key": "zone_state", "arg": "target_name", "op": "not_in", "value": ["Closed"],
+              "desc": "目的地所在區域沒有關閉"}
+
+
+def test_precondition_failure_at_dispatch_replans_without_retry():
+    """規劃後目的地區域關閉：不派工，直接以失敗結果升級為子樹重規劃（不重試）。"""
+    agent = _make_agent()
+    agent._state_probe = lambda: (lambda key, arg: (True, "Closed" if arg == "AI_Tech_Area" else "Normal"))
+    node = _atomic("a", task="LocateExhibit", topic="navigation.request", target="AI_Tech_Area")
+    node["preconditions"] = [_ZONE_OPEN]
+    plan = _root([_composite("L2-1", [node], intent="去 AI 區")])
+    new_sub = _composite("NEW", [_atomic("na", task="LocateExhibit", topic="navigation.request", target="Robotics_Area")])
+    contexts = []
+
+    def planner(intent, context):
+        contexts.append(context)
+        return new_sub
+
+    disp = make_dispatcher(agent)
+    result = agent.execute_plan_with_monitoring(plan, dispatcher=disp, subtree_planner=planner, llm_decider=_no_llm)
+    assert result["ok"] is True
+    assert [c["payload"]["params"]["target_name"] for c in disp.call_log] == ["Robotics_Area"]
+    original = next(r for r in result["results"] if r["id"] == "a")
+    assert original["attempts"] == 1                     # 沒有重試
+    assert contexts[0]["replan"]["affected_steps"][0]["error"].startswith("precondition failed")
+
+
+def test_effects_of_completed_steps_count_at_dispatch():
+    agent = _make_agent()
+    agent._state_probe = lambda: (lambda key, arg: (True, "P_Entrance"))     # 黑板上訪客仍在入口
+    go = _atomic("a", task="LocateExhibit", topic="navigation.request", target="B_AI1")
+    go["effects"] = [{"key": "visitor_location", "value_arg": "target_name"}]
+    explain = _atomic("b", task="ExplainExhibit", target="B_AI1")
+    explain["preconditions"] = [{"key": "visitor_location", "op": "eq", "value": "B_AI1", "desc": "訪客在攤位旁"}]
+    plan = _root([go, explain], exec_logic=[{"type": "Sequence", "from_id": "a", "to_id": "b"}])
+    disp = make_dispatcher(agent)
+    result = agent.execute_plan_with_monitoring(plan, dispatcher=disp, llm_decider=_no_llm)
+    assert result["ok"] is True
+    assert [c["node_id"] for c in disp.call_log] == ["a", "b"]

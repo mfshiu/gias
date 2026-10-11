@@ -138,6 +138,24 @@ class ActionStore:
         return self.kg.query(cypher, {"name": action_name})
 
     # ---------------------------
+    # Preconditions / effects（見 src/core/intent/preconditions.py）
+    # ---------------------------
+    def get_action_conditions(self, action_name: str) -> dict[str, list[dict]]:
+        """取得 Action 的前置條件與效果：{"preconditions": [...], "effects": [...]}。"""
+        rows = self.kg.query(
+            """
+            MATCH (a:Action {name:$name})
+            OPTIONAL MATCH (a)-[:REQUIRES]->(p:Precondition)
+            WITH a, collect(properties(p)) AS pre
+            OPTIONAL MATCH (a)-[:PRODUCES]->(e:Effect)
+            RETURN pre AS preconditions, collect(properties(e)) AS effects
+            """,
+            {"name": action_name},
+        )
+        row = rows[0] if rows else {}
+        return {"preconditions": list(row.get("preconditions") or []), "effects": list(row.get("effects") or [])}
+
+    # ---------------------------
     # Vector search
     # ---------------------------
     def search_actions_by_vector(
@@ -185,3 +203,49 @@ class ActionStore:
             )
         except Exception:
             return []
+
+
+# ---------------------------
+# Seed helpers
+# ---------------------------
+CLEAR_ACTION_CONDITIONS = "MATCH (n) WHERE n:Precondition OR n:Effect DETACH DELETE n"
+
+
+def write_action_conditions(write, action_id: str, *, preconditions=(), effects=()) -> None:
+    """seed 用：寫入 Action 的前置條件與效果（每筆建立新節點；seed 前先執行 CLEAR_ACTION_CONDITIONS）。
+
+    write(cypher, params) 為 adapter 的寫入函式。欄位意義見 src/core/intent/preconditions.py。
+    """
+    for spec in preconditions:
+        write(
+            """
+            MATCH (a:Action {id:$aid})
+            CREATE (a)-[:REQUIRES]->(:Precondition {
+                key: $key, arg: $arg, op: $op, value: $value, desc: $desc, severity: $severity
+            })
+            """,
+            {
+                "aid": action_id,
+                "key": spec["key"],
+                "arg": spec.get("arg"),
+                "op": spec.get("op", "eq"),
+                "value": spec.get("value"),
+                "desc": spec.get("desc", ""),
+                "severity": spec.get("severity", "block"),
+            },
+        )
+    for spec in effects:
+        write(
+            """
+            MATCH (a:Action {id:$aid})
+            CREATE (a)-[:PRODUCES]->(:Effect {key: $key, arg: $arg, value: $value, value_arg: $value_arg, desc: $desc})
+            """,
+            {
+                "aid": action_id,
+                "key": spec["key"],
+                "arg": spec.get("arg"),
+                "value": spec.get("value"),
+                "value_arg": spec.get("value_arg"),
+                "desc": spec.get("desc", ""),
+            },
+        )

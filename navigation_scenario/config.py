@@ -8,6 +8,7 @@ Navigation Scenario：地圖、Domain Profile、常數設定
 
 from __future__ import annotations
 
+from src.blackboard.client import VENUE_STATE_PROBES
 from src.core.intent.domain_profile import DomainProfile
 
 
@@ -288,6 +289,8 @@ NAVIGATION_PROFILE = DomainProfile(
     },
     entity_aliases=_entity_aliases(),
     entity_parents=_entity_parents(),
+    # Action 前置條件用的狀態變數（seed_actions 的 preconditions 會用到）
+    state_probes=dict(VENUE_STATE_PROBES),
     # live 模式：執行期間監看的黑板變動（Zone 人潮/封閉、Booth 開放狀態）
     env_subscriptions=["Zone/*/*", "Booth/*/*"],
     # live 模式：重規劃時提供給 LLM 的環境事實

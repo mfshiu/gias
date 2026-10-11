@@ -21,6 +21,7 @@ import os
 import sys
 
 from src.app_helper import get_agent_config, wait_agent
+from src.blackboard.client import VENUE_STATE_PROBES
 from src.core.intentional_agent import IntentionalAgent
 from src.core.intent.domain_profile import DomainProfile
 from src.log_helper import init_logging
@@ -79,6 +80,8 @@ EXPO_PROFILE = DomainProfile(
         "B_B1": "Gaming_Area",
         "P_Restroom": "Gaming_Area",
     },
+    # Action 前置條件用的狀態變數（tests/seed_actions_with_embeddings/seed_actions_simple.py 的 preconditions）
+    state_probes=dict(VENUE_STATE_PROBES),
     # 執行期間監看的黑板變動：Zone 人潮狀態（屬性與 CURRENT_STATE 關係）、Booth 開放狀態
     env_subscriptions=["Zone/*/*", "Booth/*/*"],
     # 重規劃時提供給 LLM 的環境事實（只列出異常狀態，避免 prompt 過長）

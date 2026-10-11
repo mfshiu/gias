@@ -17,6 +17,7 @@ import uuid
 
 from src.app_helper import get_agent_config
 from src.llm.client import LLMClient
+from src.kg.action_store import CLEAR_ACTION_CONDITIONS, write_action_conditions
 from src.kg.adapter_neo4j import Neo4jBoltAdapter
 
 
@@ -28,6 +29,12 @@ ACTIONS = [
         "desc": "引導訪客前往指定展區或攤位位置",
         "topic": "navigation.request",
         "task": "LocateExhibit",
+        "preconditions": [
+            {"key": "zone_state", "arg": "target_name", "op": "not_in", "value": ["Closed"],
+             "desc": "目的地所在區域沒有關閉"},
+            {"key": "booth_status", "arg": "target_name", "op": "ne", "value": "closed",
+             "desc": "目的地攤位開放中"},
+        ],
         "params": [
             {"key": "target_type", "name": "目標類型", "desc": "展區/攤位/展品", "type": "enum",
              "required": True, "enum": ["exhibit_zone", "booth", "exhibit"], "example": "booth"},
@@ -43,6 +50,10 @@ ACTIONS = [
         "desc": "介紹指定展品或展區的內容與特色",
         "topic": "info.request",
         "task": "ExplainExhibit",
+        "preconditions": [
+            {"key": "booth_status", "arg": "target_name", "op": "ne", "value": "closed",
+             "desc": "介紹的攤位開放中", "severity": "warn"},
+        ],
         "params": [
             {"key": "target_type", "name": "目標類型", "desc": "展區/展品", "type": "enum",
              "required": True, "enum": ["exhibit_zone", "exhibit"], "example": "exhibit"},
@@ -148,6 +159,12 @@ ACTIONS = [
         "desc": "在移動過程中即時提供方向與轉彎提示",
         "topic": "navigation.request",
         "task": "NavigationAssistance",
+        "preconditions": [
+            {"key": "zone_state", "arg": "destination", "op": "not_in", "value": ["Closed"],
+             "desc": "目的地所在區域沒有關閉"},
+            {"key": "booth_status", "arg": "destination", "op": "ne", "value": "closed",
+             "desc": "目的地攤位開放中"},
+        ],
         "params": [
             {"key": "destination", "name": "目的地", "desc": "要前往的目標名稱/編號", "type": "string",
              "required": True, "example": "A12"},
@@ -214,6 +231,7 @@ def main():
     print(">>> Clearing Action/Param nodes")
     kg.write("MATCH (a:Action) DETACH DELETE a")
     kg.write("MATCH (p:Param) DETACH DELETE p")
+    kg.write(CLEAR_ACTION_CONDITIONS)
 
     print(">>> Seeding Actions (embedding in Action.description_embedding)")
 
@@ -296,6 +314,12 @@ def main():
                     "note": "",
                 },
             )
+
+        write_action_conditions(
+            kg.write, aid,
+            preconditions=action.get("preconditions", []),
+            effects=action.get("effects", []),
+        )
 
         print(f"  - Seeded Action: {name} (task={task}, topic={topic}, params={len(params)}, dim={len(emb)})")
 

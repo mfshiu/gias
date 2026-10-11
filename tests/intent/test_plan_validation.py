@@ -183,3 +183,80 @@ def test_matching_thresholds_come_from_config():
     assert (agent.matcher.min_score, agent.matcher.fallback_min_score) == (0.8, 0.65)
     default = _make_agent()
     assert (default.matcher.min_score, default.matcher.fallback_min_score) == (0.75, 0.6)
+
+
+# ----------------------------------------------------------------------
+# A-02：前置條件（LLM 提出計畫、KG 驗證）
+# ----------------------------------------------------------------------
+_ZONE_OPEN = {"key": "zone_state", "arg": "target_name", "op": "not_in", "value": ["Closed"],
+              "desc": "目的地所在區域沒有關閉"}
+
+
+def _nav(target, severity="block"):
+    node = _atomic("1")
+    node.update(params={"target_name": target}, preconditions=[dict(_ZONE_OPEN, severity=severity)])
+    return _root([node])
+
+
+def _with_state(agent, state):
+    agent._state_probe = lambda: (lambda key, arg: (True, state.get((key, arg))))
+
+
+def _plan_with_sequence(agent, *plans):
+    sub = SubIntent(intent="go")
+    agent.break_down_intention = lambda intention: [sub]
+    agent._match_subs = lambda subs: ([(sub, [object()])], [])
+    agent.selector = MagicMock()
+    agent.selector.select_actions.return_value = {"TaskA()": "go"}
+    agent.scope_gate = MagicMock()
+    agent.scope_gate.decide.return_value = ScopeDecision(can_execute=True, reason="ok")
+    agent.planner = MagicMock()
+    agent.planner.plan.side_effect = list(plans)
+    return agent.plan_intention("go")
+
+
+def test_precondition_violation_triggers_one_corrective_replan():
+    agent = _make_agent()
+    _with_state(agent, {("zone_state", "AI_Tech_Area"): "Closed", ("zone_state", "Robotics_Area"): "Normal"})
+    plan = _plan_with_sequence(agent, _nav("AI_Tech_Area"), _nav("Robotics_Area"))
+    assert plan["type"] == "composite"
+    assert plan["sub_plans"][0]["params"]["target_name"] == "Robotics_Area"
+    # 第二次規劃帶著違反原因
+    ctx = agent.planner.plan.call_args_list[1].kwargs["context"]
+    assert ctx["replan"]["kind"] == "precondition"
+    assert ctx["replan"]["affected_steps"][0]["error"].startswith("precondition failed: 目的地所在區域沒有關閉")
+
+
+def test_plan_rejected_when_corrected_plan_still_violates():
+    agent = _make_agent()
+    _with_state(agent, {("zone_state", "AI_Tech_Area"): "Closed"})
+    plan = _plan_with_sequence(agent, _nav("AI_Tech_Area"), _nav("AI_Tech_Area"))
+    assert plan["type"] == "leaf_unresolved"
+    assert plan["reason"] == "Plan violates action preconditions."
+    assert plan["debug"]["precondition_findings"][0]["actual"] == "Closed"
+    assert agent.planner.plan.call_count == 2
+
+
+def test_warn_precondition_is_recorded_not_replanned():
+    agent = _make_agent()
+    _with_state(agent, {("zone_state", "AI_Tech_Area"): "Closed"})
+    plan = _plan_with_sequence(agent, _nav("AI_Tech_Area", severity="warn"))
+    assert plan["type"] == "composite"
+    assert plan["debug"]["precondition_findings"][0]["severity"] == "warn"
+    assert agent.planner.plan.call_count == 1
+
+
+def test_preconditions_can_be_disabled():
+    agent = _make_agent({"preconditions": {"enabled": False}})
+    _with_state(agent, {("zone_state", "AI_Tech_Area"): "Closed"})
+    assert _plan_with_sequence(agent, _nav("AI_Tech_Area"))["type"] == "composite"
+
+
+def test_resolve_entity_uses_domain_aliases():
+    from src.core.intent.domain_profile import DomainProfile
+
+    agent = _make_agent()
+    agent.domain = DomainProfile(entity_aliases={"AI_Tech_Area": ["AI 展區"]})
+    assert agent._resolve_entity("AI展區") == "AI_Tech_Area"
+    assert agent._resolve_entity("ai_tech_area") == "AI_Tech_Area"
+    assert agent._resolve_entity("B_GM1") == "B_GM1"

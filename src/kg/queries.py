@@ -210,8 +210,11 @@ def subgoals_by_goal(
 
 def preconditions_by_action(action_name: str, top_k: int = 100) -> CypherQuery:
     """
-    範例 schema：
-    (a:Action {name})-[:REQUIRES]->(p:Precondition {key, op, value, desc})
+    schema（欄位意義見 src/core/intent/preconditions.py、docs/action_preconditions.md）：
+    (a:Action {name})-[:REQUIRES]->(p:Precondition {key, arg, op, value, desc, severity})
+
+    IntentionalAgent 規劃時經 ActionStore.get_action_conditions 一併讀取前置條件與效果；
+    這裡的查詢供 KGClient.check_preconditions 等工具使用。
     """
     cypher = """
     MATCH (a:Action {name:$name})

@@ -369,3 +369,16 @@ def test_reroute_alone_does_not_consult_llm():
     assert _llm_trigger(decider).decide(action_results=[], env_changes=[], cursor=c,
                                         adaptations=[reroute]).kind == TriggerKind.NONE
     assert decider.calls == []
+
+
+# ----------------------------------------------------------------------
+# A-02：前置條件不成立的失敗不重試
+# ----------------------------------------------------------------------
+def test_precondition_failure_skips_retry():
+    c = PlanCursor(_two_atomic_plan())
+    tid = c.mark_dispatched("a")
+    c.accept_action_result(tid, {"task_id": tid, "ok": False, "error": "precondition failed: zone closed"})
+    t = ReplanTrigger(budget_guard=BudgetGuard(Budget(max_retries_per_node=1)))
+    ar = ActionResult(task_id=tid, node_id="a", ok=False, error="precondition failed: zone closed")
+    decision = t.decide(action_results=[ar], env_changes=[], cursor=c)
+    assert decision.kind == TriggerKind.REPLAN_SUBTREE

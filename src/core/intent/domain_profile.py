@@ -17,6 +17,8 @@ class DomainProfile:
       讓環境事件中的 id 能對應到計畫步驟裡的中文名稱
     - entity_parents: 實體 id -> 所在的上層實體（如攤位 -> 展區）；
       上層實體的事件也會影響引用下層實體的步驟
+    - state_probes: 狀態變數名稱 -> Cypher（參數 $arg，回傳欄位 value），
+      用來檢查 Action 的前置條件（見 src/core/intent/preconditions.py）
     """
     name: str = "generic"
     synonym_rules: list[tuple[str, str]] = field(default_factory=list)
@@ -27,6 +29,7 @@ class DomainProfile:
     env_fact_queries: dict[str, str] = field(default_factory=dict)
     entity_aliases: dict[str, list[str]] = field(default_factory=dict)
     entity_parents: dict[str, str] = field(default_factory=dict)
+    state_probes: dict[str, str] = field(default_factory=dict)
 
     def normalize(self, text: str) -> str:
         t = (text or "").strip()

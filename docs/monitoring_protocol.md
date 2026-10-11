@@ -166,6 +166,7 @@ IA 訂閱 `info.progress` / `navigation.progress`；只採用屬於節點目前�
 | `side_effect` | KG `Action.side_effect` | trigger 策略 |
 | `interruptible` | KG `Action.interruptible` | 預設 true |
 | `deadline_sec` | KG `Action.expected_latency_sec` × 倍率 | timeout |
+| `preconditions` / `effects` | KG `(:Action)-[:REQUIRES]->(:Precondition)` / `-[:PRODUCES]->(:Effect)` | 規劃後與派工前的前置條件檢查（見 [`action_preconditions.md`](action_preconditions.md)） |
 
 舊節點完全相容：缺欄位時走預設值（`interruptible=true`、`side_effect="none"`、`deadline_sec=30`）。
 
@@ -198,6 +199,8 @@ execute_plan_with_monitoring(plan):
       新計畫換上後才取消被取代的派工（重規劃失敗時原本的派工繼續執行）
     next_atomics = cursor.next_ready_atomics()
     for atom in next_atomics:
+      前置條件不成立（intent.preconditions.check_before_dispatch）
+        → 不派工，以 ok=false、error "precondition failed: ..." 交給 trigger（不重試，直接 REPLAN_SUBTREE）
       dispatch_async(atom)   # publish + subscribe(return_topic)
     monitor.wait_one(timeout=poll_interval)
   送 blackboard.control {command: unsubscribe}（finally，一定執行）
