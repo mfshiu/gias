@@ -13,6 +13,9 @@ poll_interval_sec = 2.0        # 輪詢週期：偵測直接寫入 Neo4j 的變�
 broadcast_events = true        # 把每個變動廣播到 blackboard.event.*；false 時只掃描有人訂閱的 Label
 projections = ["venue"]        # 觀察投影預設集；未設定為 ["venue"]，[] 表示不投影
 
+[blackboard.access]
+token = "<共用金鑰>"           # 設定後所有 blackboard.control 命令都要帶相同金鑰（見 §4）
+
 # 監看目標；未設定時使用內建的 Agent、Zone、Task、POI、Booth
 [[blackboard.watch_targets]]
 label = "Room"
@@ -72,3 +75,19 @@ register_projection_preset("office", [
 
 訂閱 pattern 以 `/` 分段，`*` 比對任一段（例：`Zone/*/*`）。IntentionalAgent 依 `DomainProfile.env_subscriptions`
 訂閱，並以同一組 pattern 判斷事件是否與計畫有關（見 `monitoring_protocol.md` §7.1）。
+
+---
+
+## 4. 存取控制（`src/blackboard/access.py`）
+
+`blackboard.control` 接受 `query` / `write`（Cypher）、`subscribe`、`observe` 等命令。
+
+| 防護 | 內容 |
+|------|------|
+| 共用金鑰 | 設定 `[blackboard.access] token` 後，每個命令都必須帶 `"token"`，缺少或不符時回覆 `{"ok": false, "error": "unauthorized"}`。GIAS 的用戶端（`src/blackboard/client.py` 的 helper、感測器、觀察者，以及經 helper 的 IntentionalAgent、InfoAgent、NavigationAgent）會從自己的設定讀取並附上，所以同一份 `gias.toml` 的元件不必另外處理。未設定時照常運作，BlackboardAgent 啟動時記錄警告 |
+| 唯讀查詢 | `query` 一律在唯讀交易執行，Neo4j 會拒絕其中的寫入 |
+| 危險語法 | 不論是否有金鑰，一律拒絕：`LOAD CSV`、`dbms.*` / `apoc.*` 程序、建立或刪除索引與約束、資料庫與使用者管理、`GRANT` / `DENY` / `REVOKE`、`USE` 切換資料庫；回覆 `{"ok": false, "error": "forbidden: <原因>"}` |
+
+自行撰寫的用戶端：在命令中加上 `"token": "<共用金鑰>"`，或使用 `src.blackboard.access.with_token(agent, payload)`。
+
+金鑰隨 MQTT 訊息明文傳送；broker 未啟用 TLS 時可被竊聽或重送，傳輸層的保護見 S-02。

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 
+from .access import with_token
 from .agent import BlackboardAgent
 
 if TYPE_CHECKING:
@@ -17,9 +18,9 @@ if TYPE_CHECKING:
 
 
 def _control(agent: "Agent", payload: dict[str, Any], *, timeout: float) -> dict[str, Any] | None:
-    """送出 blackboard.control 命令；黑板代理沒回應或回 ok=False 時回傳 None。"""
+    """送出 blackboard.control 命令（有設定金鑰時附上）；黑板代理沒回應或回 ok=False 時回傳 None。"""
     try:
-        pcl = agent.publish_sync(BlackboardAgent.CONTROL_TOPIC, payload, timeout=timeout)
+        pcl = agent.publish_sync(BlackboardAgent.CONTROL_TOPIC, with_token(agent, payload), timeout=timeout)
         resp = getattr(pcl, "content", None) if pcl else None
         if isinstance(resp, dict) and resp.get("ok"):
             return resp

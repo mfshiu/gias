@@ -27,6 +27,7 @@ from agentflow.core.agent import Agent
 
 from src.app_helper import get_agent_config
 from src.log_helper import init_logging
+from src.blackboard.access import with_token
 from src.blackboard.agent import BlackboardAgent
 
 from .observation import (
@@ -329,7 +330,7 @@ class ObserverAgent(Agent, ABC):
         }
         
         try:
-            self.publish(self.BLACKBOARD_TOPIC, payload)
+            self.publish(self.BLACKBOARD_TOPIC, with_token(self, payload))
             logger.info("ObserverAgent submitted observation: saliency=%d, entities=%d",
                        observation.saliency, len(observation.entities))
             return True

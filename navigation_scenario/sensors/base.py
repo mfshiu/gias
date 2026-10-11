@@ -18,6 +18,7 @@ import uuid
 from agentflow.core.agent import Agent
 
 from src.log_helper import init_logging
+from src.blackboard.access import with_token
 from src.blackboard.agent import BlackboardAgent
 
 logger = init_logging()
@@ -280,7 +281,7 @@ class ScenarioSensorAgent(Agent, ABC):
                     "observation": update.observation,
                     "requester_id": self._sensor_id,
                 }
-                self.publish(self.BLACKBOARD_TOPIC, payload)
+                self.publish(self.BLACKBOARD_TOPIC, with_token(self, payload))
             elif update.kind == "write":
                 if update.statements:
                     statements.extend(update.statements)
@@ -291,12 +292,12 @@ class ScenarioSensorAgent(Agent, ABC):
                 for cy, ps in statements:
                     self.publish(
                         self.BLACKBOARD_TOPIC,
-                        {
+                        with_token(self, {
                             "command": "write",
                             "cypher": cy,
                             "params": ps,
                             "requester_id": self._sensor_id,
-                        },
+                        }),
                     )
             else:
                 return False

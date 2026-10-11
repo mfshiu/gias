@@ -32,6 +32,7 @@ from .event import BlackboardEvent, ChangeAction
 from .subscription import SubscriptionManager
 from .watcher import BlackboardWatcher, WatchTarget
 from .projection import ObservationProjection, projections_from_config
+from .access import AccessPolicy, check_cypher
 
 
 logger = init_logging()
@@ -75,6 +76,8 @@ class BlackboardAgent(Agent):
         self.broadcast_events = broadcast_events
         self.projections = tuple(projections) if projections is not None else projections_from_config(
             bb_cfg.get("projections"))
+        # blackboard.control 的存取控制（[blackboard.access] token；見 access.py）
+        self.access = AccessPolicy.from_config(agent_config)
         if watch_targets is None and bb_cfg.get("watch_targets") is not None:
             watch_targets = [WatchTarget.from_config(item) for item in bb_cfg["watch_targets"]]
         self.watch_targets = watch_targets
@@ -116,6 +119,11 @@ class BlackboardAgent(Agent):
 
         self.subscribe(self.CONTROL_TOPIC, "dict", self._handle_control)
         logger.info("BlackboardAgent subscribed to control topic: %s", self.CONTROL_TOPIC)
+        if not self.access.token:
+            logger.warning(
+                "BlackboardAgent: no [blackboard.access] token configured; %s accepts commands from any MQTT "
+                "client that can reach the broker. Set a shared token to require it.", self.CONTROL_TOPIC,
+            )
 
         self.watcher = BlackboardWatcher(
             kg_adapter=self.kg,
@@ -189,6 +197,10 @@ class BlackboardAgent(Agent):
         requester_id = data.get("requester_id", "unknown")
         logger.debug("BlackboardAgent._handle_control: command=%s, requester_id=%s", command, requester_id)
 
+        if not self.access.authorized(data.get("token")):
+            logger.warning("BlackboardAgent: rejected %s from %s (missing or wrong token)", command, requester_id)
+            return {"ok": False, "error": "unauthorized"}
+
         if command == "subscribe":
             pattern = data.get("pattern", "")
             if not pattern:
@@ -254,6 +266,10 @@ class BlackboardAgent(Agent):
         params = data.get("params", {})
         if not cypher:
             return {"ok": False, "error": "Missing 'cypher'"}
+        forbidden = check_cypher(cypher)
+        if forbidden:
+            logger.warning("BlackboardAgent: rejected write from %s (%s)", origin_id, forbidden)
+            return {"ok": False, "error": f"forbidden: {forbidden}"}
 
         try:
             result = self.kg.write(cypher, params)
@@ -275,9 +291,14 @@ class BlackboardAgent(Agent):
         params = data.get("params", {})
         if not cypher:
             return {"ok": False, "error": "Missing 'cypher'"}
+        forbidden = check_cypher(cypher)
+        if forbidden:
+            logger.warning("BlackboardAgent: rejected query (%s)", forbidden)
+            return {"ok": False, "error": f"forbidden: {forbidden}"}
 
         try:
-            rows = self.kg.query(cypher, params)
+            # 唯讀交易：查詢不能寫入或刪除黑板
+            rows = self.kg.read(cypher, params)
             return {"ok": True, "rows": rows}
         except Exception as e:
             logger.warning("BlackboardAgent query error: %s", e)
