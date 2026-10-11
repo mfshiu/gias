@@ -133,7 +133,7 @@ def test_decide_abort_when_deadline_reached():
 
 def test_unrelated_env_change_ignored():
     c = PlanCursor(_two_atomic_plan())
-    t = ReplanTrigger(budget_guard=BudgetGuard())
+    t = ReplanTrigger(config=TriggerConfig(relevant_topic_patterns=("Zone/*/*",)), budget_guard=BudgetGuard())
     change = EnvChange(topic="Unrelated/Foo/Bar", action="update")
     decision = t.decide(action_results=[], env_changes=[change], cursor=c)
     assert decision.kind == TriggerKind.NONE
@@ -252,7 +252,8 @@ def test_llm_not_consulted_for_irrelevant_env_change():
     c = PlanCursor(_two_atomic_plan())
     decider = _RecordingDecider(ReplanDecision.abort("x"))
     change = EnvChange(topic="Agent/GuideBot/status", action="update")
-    assert _llm_trigger(decider).decide(action_results=[], env_changes=[change], cursor=c).kind == TriggerKind.NONE
+    trigger = _llm_trigger(decider, relevant_topic_patterns=("Zone/*/*", "Booth/*/*"))
+    assert trigger.decide(action_results=[], env_changes=[change], cursor=c).kind == TriggerKind.NONE
     assert decider.calls == []
 
 
@@ -381,4 +382,59 @@ def test_precondition_failure_skips_retry():
     t = ReplanTrigger(budget_guard=BudgetGuard(Budget(max_retries_per_node=1)))
     ar = ActionResult(task_id=tid, node_id="a", ok=False, error="precondition failed: zone closed")
     decision = t.decide(action_results=[ar], env_changes=[], cursor=c)
+    assert decision.kind == TriggerKind.REPLAN_SUBTREE
+
+
+# ----------------------------------------------------------------------
+# G-02：觸發條件不綁定展場領域
+# ----------------------------------------------------------------------
+from src.core.monitoring.trigger import topic_matches
+
+
+@pytest.mark.parametrize("pattern, topic, expected", [
+    ("Zone/*/*", "Zone/AI_Tech_Area/crowd_level", True),
+    ("Zone/*/*", "Zone/CURRENT_STATE/State", True),
+    ("Zone/*/*", "ZoneX/AI_Tech_Area/crowd_level", False),    # 前綴比對會誤中的情況
+    ("Zone/*/*", "Zone/AI_Tech_Area", False),                 # 段數不同
+    ("*/CONNECTED_TO/*", "POI/CONNECTED_TO/POI", True),
+    ("*/CONNECTED_TO/*", "Zone/A12/status", False),           # 舊作法把它當成空前綴，什麼都比對得到
+    ("Booth/B_AI1/status", "Booth/B_AI1/status", True),
+])
+def test_topic_matches_uses_subscription_semantics(pattern, topic, expected):
+    assert topic_matches(pattern, topic) is expected
+
+
+def _room_plan():
+    return {"id": "root", "type": "composite", "intent": "準備會議", "execution_logic": [], "sub_plans": [
+        {"id": "a", "type": "atomic", "is_atomic": True, "task": "SetupProjector", "intent": "在 R301 準備投影機",
+         "params": {"room": "R301"}, "sub_plans": []},
+    ]}
+
+
+def test_default_config_is_not_tied_to_the_venue_domain():
+    assert TriggerConfig().relevant_topic_patterns == () and TriggerConfig().relevant_topic_prefixes == ()
+    c = PlanCursor(_room_plan())
+    change = EnvChange(topic="Room/R301/temperature", action="update", metadata={"node_id": "R301"})
+    decision = ReplanTrigger(budget_guard=BudgetGuard()).decide(action_results=[], env_changes=[change], cursor=c)
+    assert decision.kind == TriggerKind.REPLAN_SUBTREE and decision.affected_node_ids == ("a",)
+
+
+def test_patterns_filter_by_segments():
+    c = PlanCursor(_two_atomic_plan())
+    t = ReplanTrigger(config=TriggerConfig(relevant_topic_patterns=("Zone/*/*",)), budget_guard=BudgetGuard())
+    lookalike = EnvChange(topic="ZoneX/AI_Tech_Area/crowd_level", action="update")
+    assert t.decide(action_results=[], env_changes=[lookalike], cursor=c).kind == TriggerKind.NONE
+    real = EnvChange(topic="Zone/AI_Tech_Area/crowd_level", action="update")
+    assert t.decide(action_results=[], env_changes=[real], cursor=c).kind == TriggerKind.REPLAN_SUBTREE
+
+
+def test_entity_metadata_keys_are_configurable():
+    c = PlanCursor(_room_plan())
+    # 其他事件來源：實體放在 metadata.room_id，topic 中段不是房間
+    change = EnvChange(topic="Facility/HVAC/alarm", action="update", metadata={"room_id": "R301"})
+    plain = ReplanTrigger(budget_guard=BudgetGuard())
+    assert plain.decide(action_results=[], env_changes=[change], cursor=c).kind == TriggerKind.NONE
+    cfg = TriggerConfig(entity_metadata_keys=("node_id", "source_id", "room_id"))
+    decision = ReplanTrigger(config=cfg, budget_guard=BudgetGuard()).decide(
+        action_results=[], env_changes=[change], cursor=c)
     assert decision.kind == TriggerKind.REPLAN_SUBTREE

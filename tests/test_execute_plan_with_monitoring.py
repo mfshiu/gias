@@ -606,12 +606,15 @@ def test_build_trigger_config_reads_settings_and_domain_prefixes():
     agent.agent_config = {"intent": {"monitoring": {"enable_llm_assist": True, "llm_max_calls": 3}}}
     tc = agent._build_trigger_config()
     assert (tc.enable_llm_assist, tc.llm_max_calls) == (True, 3)
-    assert tc.relevant_topic_prefixes == ("Zone/", "")
-    agent.domain = DomainProfile()
+    # G-02：直接使用訂閱 pattern（"*/CONNECTED_TO/*" 不再變成可比對任何 topic 的空前綴）
+    assert tc.relevant_topic_patterns == ("Zone/*/*", "*/CONNECTED_TO/*")
+    assert tc.relevant_topic_prefixes == ()
+    agent.domain = DomainProfile(env_entity_keys=["room_id"])
     agent.agent_config = {}
     tc = agent._build_trigger_config()
     assert tc.enable_llm_assist is False
-    assert tc.relevant_topic_prefixes == TriggerConfig().relevant_topic_prefixes
+    assert tc.relevant_topic_patterns == () == TriggerConfig().relevant_topic_patterns
+    assert tc.entity_metadata_keys == ("node_id", "source_id", "room_id")
 
 
 # ----------------------------------------------------------------------

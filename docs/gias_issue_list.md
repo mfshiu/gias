@@ -88,7 +88,7 @@
 | **P-02** | 效能 | 每次比對都執行 `SHOW INDEXES` 加 `awaitIndex`；讀不到維度時還會 DROP 索引再重建 | [action_store.py:93](../src/kg/action_store.py#L93)、[action_matcher.py:235](../src/core/intent/action_matcher.py#L235) | 多了往返延遲，正式環境中索引可能被反覆重建 | 已修正（814d66b） |
 | **P-03** | 效能 | 黑板每 2 秒輪詢一次，做全量比對 | [watcher.py:49](../src/blackboard/watcher.py#L49) | 有延遲，資料量大時無法擴充 | 已修正（0dbeb5e） |
 | **G-01** | 通用性 | 只寫死了 info、navigation 兩個頻道，未知 topic 一律送往 info | [_executor_utils.py:31](../src/agents/_executor_utils.py#L31) | 新增一種執行端 Agent 就要改核心程式 | 已修正（4e5ea49） |
-| **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 未處理 |
+| **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 已修正 |
 | **S-02** | 安全 | MQTT 用明文帳密，沒有 TLS 或 ACL | `gias.toml` | 訊息可被竊聽或偽造 | 未處理 |
 | **S-03** | 安全 | OpenAI API 金鑰以明文存在 `gias.toml`（已在 .gitignore、沒被 git 追蹤） | `gias.toml` | 本機或備份檔（`_bak/*.7z`）外流時金鑰會一起外洩 | 未處理 |
 
@@ -399,6 +399,18 @@ BlackboardAgent 預設仍把每個變動廣播到 `blackboard.event.*`（`[black
 新增測試 13 個（`tests/test_executor_channels.py`，含新頻道端到端派工與回報、重規劃換上新頻道、取消、沒有 topic），並以突變測試確認 7 個關鍵行為在還原後會被測試抓到。修改 2 個鎖定舊行為的既有測試（`tests/test_execute_plan.py`：空白 topic 不再回傳 `info.request`、未知頻道不再送往 info）。全部非 integration 測試（不含 `tests/kg`）共 973 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 **仍未涵蓋**：InfoAgent 與 NavigationAgent 處理派工、取消、冪等與結果的程式重複；可再抽成共用的執行端基底類別，讓新增執行端只需實作任務本身。
+
+### 2026-10-12：G-02
+
+L-01 已讓 IntentionalAgent 依 `DomainProfile.env_subscriptions` 覆寫前綴，本項移除其餘的領域綁定：
+
+| 項目 | 修正前 | 修正後 | 主要檔案 |
+|---|---|---|---|
+| 預設值 | `TriggerConfig.relevant_topic_prefixes = ("Zone/", "Booth/")` | 預設不綁定任何領域：沒有設定時，收到的事件都視為相關（IntentionalAgent 只訂閱 `env_subscriptions`） | `trigger.py` |
+| 相關性判斷 | 把訂閱 pattern 截成前綴（`"Zone/*/*"` → `"Zone/"`），`"*/CONNECTED_TO/*"` 變成空前綴而比對所有事件，`"ZoneX/..."` 也會被 `"Zone"` 類前綴誤中 | 新增 `relevant_topic_patterns`，以與黑板訂閱相同的語意比對（`*` 比對任一段、段數相同）；IntentionalAgent 直接傳入 `env_subscriptions`。`relevant_topic_prefixes` 保留給直接設定的呼叫端 | `trigger.py`、`intentional_agent.py` |
+| 事件中的實體 | metadata 欄位寫死 `zone`、`booth_id`、`zone_name`、`target`（其中沒有任何事件來源會產生） | 預設為 BlackboardWatcher 的 `node_id`、`source_id`，可由 `TriggerConfig.entity_metadata_keys` / `DomainProfile.env_entity_keys` 擴充 | `trigger.py`、`domain_profile.py` |
+
+新增測試 10 個（`tests/monitoring/test_trigger.py`：pattern 語意、預設不綁領域、其他領域（會議室）的事件、可設定的實體欄位），並以突變測試確認 6 個關鍵行為在還原後會被測試抓到。修改 3 個依賴舊預設的既有測試（改為明確設定 pattern）。全部非 integration 測試（不含 `tests/kg`）共 983 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 ---
 

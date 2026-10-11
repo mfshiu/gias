@@ -19,6 +19,8 @@ class DomainProfile:
       上層實體的事件也會影響引用下層實體的步驟
     - state_probes: 狀態變數名稱 -> Cypher（參數 $arg，回傳欄位 value），
       用來檢查 Action 的前置條件（見 src/core/intent/preconditions.py）
+    - env_entity_keys: 環境事件 metadata 中另外代表實體的欄位（BlackboardWatcher 的 node_id、source_id 已內建），
+      給其他事件來源使用
     """
     name: str = "generic"
     synonym_rules: list[tuple[str, str]] = field(default_factory=list)
@@ -30,6 +32,7 @@ class DomainProfile:
     entity_aliases: dict[str, list[str]] = field(default_factory=dict)
     entity_parents: dict[str, str] = field(default_factory=dict)
     state_probes: dict[str, str] = field(default_factory=dict)
+    env_entity_keys: list[str] = field(default_factory=list)
 
     def normalize(self, text: str) -> str:
         t = (text or "").strip()

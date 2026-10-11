@@ -31,6 +31,12 @@ from .cursor import PlanCursor
 from .entity_match import EntityMatcher
 
 
+def topic_matches(pattern: str, topic: str) -> bool:
+    """黑板訂閱的 pattern 語意：以 / 分段、段數相同，* 比對任一段（"Zone/*/*" 比對 "Zone/A12/crowd_level"）。"""
+    p, t = str(pattern).split("/"), str(topic).split("/")
+    return len(p) == len(t) and all(a == "*" or a == b for a, b in zip(p, t))
+
+
 @dataclass(slots=True)
 class TriggerConfig:
     """觸發策略的可調參數。"""
@@ -41,13 +47,18 @@ class TriggerConfig:
     enable_llm_assist: bool = False
     abort_after_failures: int = 5             # 一個 plan 內累積失敗達此值即 ABORT
     abort_after_obsolete: int = 8             # 累積 OBSOLETE 達此值即 ABORT
-    relevant_topic_prefixes: tuple[str, ...] = ("Zone/", "Booth/")
+    # 哪些環境事件與計畫有關：黑板訂閱 pattern（見 topic_matches）或 topic 前綴；兩者都空白表示收到的事件都有關
+    # （IntentionalAgent 只訂閱 DomainProfile.env_subscriptions，並以同一組 pattern 設定這裡）。不綁定任何領域
+    relevant_topic_patterns: tuple[str, ...] = ()
+    relevant_topic_prefixes: tuple[str, ...] = ()
     llm_max_calls: int = 10                   # 一個 plan 最多諮詢 LLM 幾次（控制成本與延遲）
     # 判斷環境事件影響哪些節點（見 entity_match）：實體別名、實體所在的上層實體
     entity_aliases: dict[str, list[str]] = field(default_factory=dict)
     entity_parents: dict[str, str] = field(default_factory=dict)
     # 比對時忽略的參數：步驟的出發點不代表該步驟依賴那個地點
     ignored_param_keys: tuple[str, ...] = ("current_location",)
+    # 環境事件 metadata 中代表實體的欄位（BlackboardWatcher：節點事件 node_id、關係事件 source_id）
+    entity_metadata_keys: tuple[str, ...] = ("node_id", "source_id")
 
 
 class ReplanTrigger:
@@ -207,9 +218,12 @@ class ReplanTrigger:
         return True
 
     def _relevant_changes(self, changes: list[EnvChange]) -> list[EnvChange]:
+        patterns, prefixes = self.config.relevant_topic_patterns, self.config.relevant_topic_prefixes
+        if not patterns and not prefixes:
+            return list(changes)
         return [
             c for c in changes
-            if any(c.topic.startswith(p) for p in self.config.relevant_topic_prefixes)
+            if any(topic_matches(p, c.topic) for p in patterns) or any(c.topic.startswith(p) for p in prefixes)
         ]
 
     # ------------------------------------------------------------------
@@ -267,7 +281,7 @@ class ReplanTrigger:
         if not relevant:
             return ReplanDecision.none()
 
-        # 規則：若任何 PENDING 或 IN_FLIGHT 節點的 params/intent 命中變更的 zone/booth → subtree replan
+        # 規則：若任何 PENDING 或 IN_FLIGHT 節點的 params/intent 提到變動的實體 → subtree replan
         affected = self._find_affected_nodes(relevant, cursor)
         if not affected:
             return ReplanDecision.none()
@@ -297,13 +311,12 @@ class ReplanTrigger:
         entities: set[str] = set()
         for c in changes:
             md = c.metadata or {}
-            # topic 結構：Zone/<name>/<prop> 或 Booth/<id>/<prop>；
-            # 關係事件的中段是關係名稱（如 Zone/CURRENT_STATE/State），不是實體
+            # 節點事件 topic 為 <Label>/<id>/<property>，中段是實體；
+            # 關係事件 <SourceLabel>/<REL>/<TargetLabel> 的中段是關係名稱，不是實體
             parts = c.topic.split("/")
             if len(parts) >= 2 and parts[1] and parts[1] != "*" and not md.get("rel_type"):
                 entities.add(parts[1])
-            # BlackboardWatcher 的節點事件帶 node_id，關係事件帶 source_id
-            for key in ("zone", "booth_id", "zone_name", "target", "node_id", "source_id"):
+            for key in self.config.entity_metadata_keys:
                 v = md.get(key)
                 if isinstance(v, str) and v:
                     entities.add(v)

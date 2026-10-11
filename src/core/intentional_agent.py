@@ -1189,26 +1189,16 @@ class IntentionalAgent(Agent):
     def _build_trigger_config(self) -> TriggerConfig:
         """依 intent.monitoring 設定與 DomainProfile 建立 TriggerConfig。"""
         m = self._monitoring_config()
-        tc = TriggerConfig(
+        base_keys = TriggerConfig().entity_metadata_keys
+        return TriggerConfig(
             enable_llm_assist=bool(m.get("enable_llm_assist", False)),
             llm_max_calls=int(m.get("llm_max_calls", 10)),
             entity_aliases={k: list(v) for k, v in (self.domain.entity_aliases or {}).items()},
             entity_parents=dict(self.domain.entity_parents or {}),
+            # 與訂閱黑板相同的 pattern 判斷事件是否相關；領域由 DomainProfile 決定，trigger 本身不綁定
+            relevant_topic_patterns=tuple(p for p in self.domain.env_subscriptions or [] if p),
+            entity_metadata_keys=base_keys + tuple(k for k in self.domain.env_entity_keys or [] if k not in base_keys),
         )
-        prefixes = self._topic_prefixes(self.domain.env_subscriptions)
-        if prefixes:
-            tc.relevant_topic_prefixes = prefixes
-        return tc
-
-    @staticmethod
-    def _topic_prefixes(patterns: list[str] | None) -> tuple[str, ...]:
-        """把訂閱 pattern 轉成 trigger 用的 topic 前綴（"Zone/*/*" → "Zone/"）。"""
-        prefixes: list[str] = []
-        for pattern in patterns or []:
-            prefix = str(pattern).split("*", 1)[0]
-            if prefix not in prefixes:
-                prefixes.append(prefix)
-        return tuple(prefixes)
 
     def _bb_requester_id(self) -> str:
         return str(getattr(self, "agent_id", "") or "intentional_agent")
