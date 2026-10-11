@@ -89,7 +89,7 @@
 | **P-03** | 效能 | 黑板每 2 秒輪詢一次，做全量比對 | [watcher.py:49](../src/blackboard/watcher.py#L49) | 有延遲，資料量大時無法擴充 | 已修正（0dbeb5e） |
 | **G-01** | 通用性 | 只寫死了 info、navigation 兩個頻道，未知 topic 一律送往 info | [_executor_utils.py:31](../src/agents/_executor_utils.py#L31) | 新增一種執行端 Agent 就要改核心程式 | 已修正（4e5ea49） |
 | **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 已修正（ca497df） |
-| **S-02** | 安全 | MQTT 用明文帳密，沒有 TLS 或 ACL | `gias.toml` | 訊息可被竊聽或偽造 | 已修正 |
+| **S-02** | 安全 | MQTT 用明文帳密，沒有 TLS 或 ACL | `gias.toml` | 訊息可被竊聽或偽造 | 已修正（c11bdc6；AgentFlow 端未 commit） |
 | **S-03** | 安全 | OpenAI API 金鑰以明文存在 `gias.toml`（已在 .gitignore、沒被 git 追蹤） | `gias.toml` | 本機或備份檔（`_bak/*.7z`）外流時金鑰會一起外洩 | 未處理 |
 
 ## 四、低（11 項）
@@ -442,7 +442,7 @@ L-01 已讓 IntentionalAgent 依 `DomainProfile.env_subscriptions` 覆寫前綴�
 - 金鑰隨 MQTT 明文傳送，broker 未啟用 TLS 時可被竊聽（S-02）
 - 持有金鑰的用戶端仍可執行任意（非危險語法的）寫入，例如刪除黑板節點；更細的權限（依用戶端限制可寫入的 Label）尚未實作
 
-### 2026-10-12：S-02
+### 2026-10-12：S-02（commit c11bdc6）
 
 依確認的方向：TLS 支援加在 AgentFlow 的 MQTT broker；ACL 採 GIAS 共用服務帳號、拒絕其他連線。完整步驟見 [`docs/mqtt_security.md`](mqtt_security.md)。
 
