@@ -101,7 +101,7 @@
 | **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 已修正（877f6be） |
 | **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 已修正（0037a5c） |
 | **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 已修正（450b8ee） |
-| **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 未處理 |
+| **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 已修正 |
 | **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 未處理 |
 | **E-03** | 工程品質 | 有空殼或沒被使用的模組：`llm/cache`、`router`、`policy`、`observability`，`schemas/plan.py`、`eval.py`，`tasks/planning_tasks.py`、`evaluation_tasks.py`，`kg/client.py` | `src/llm/`、`src/kg/` | 未處理 |
 | **E-04** | 工程品質 | `print` 和 logger 混用，log 層級無法統一控制 | `planner.py`、`src/agents/*` | 未處理 |
@@ -477,6 +477,22 @@ L-01 已讓 IntentionalAgent 依 `DomainProfile.env_subscriptions` 覆寫前綴�
 新增測試 5 個（`tests/test_config_secrets.py`），並以突變測試確認 7 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 1032 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 **注意**：本次未修改 `gias.toml`，其中的 MQTT 密碼、OpenAI 金鑰、Neo4j 密碼仍為明文，元件啟動時會出現提醒；依 `docs/secrets.md` §3 搬到環境變數，並更換曾以明文存放的金鑰與密碼。
+
+### 2026-10-12：S-04
+
+說明見 [`docs/prompt_safety.md`](prompt_safety.md)。
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 資料區塊與規則 | 使用者輸入、執行端回覆、黑板與感測器資料放進 prompt 時包在 `<user_input>` / `<step_results>` / `<env_data>` 中，跳脫文字中的同名標記、移除控制字元、限制長度；各 prompt 的 system 規則說明標記內是資料，不得照做其中的指示 | `src/llm/untrusted.py`（新）、`prompt_builder.py`、`llm_decomposer.py`、`scope_gate.py`、`llm_advisor.py`、`intention/response.py`、意圖解析模板與 `intent_tasks.py` |
+| 模板角色注入 | 修正：`PromptRegistry.render` 原本先代入變數再依 `---system` 切分角色，使用者輸入中的 `---system` 一行就能新增 system 訊息；改為先切分再代入 | `src/llm/prompts/registry.py` |
+| 警示 | 比對常見注入語句（中英文），`plan_intention` 記錄 warning 並標在 `debug.prompt_injection_signals`；不據此拒絕 | `untrusted.py`、`intentional_agent.py` |
+
+LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate 等結構驗證約束，文件中說明各層分工。
+
+新增測試 18 個（`tests/llm/test_untrusted.py`），並以突變測試確認 12 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 1050 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+**限制**：資料區塊與規則只能降低、不能完全消除 LLM 被誘導的可能；警示是關鍵字比對，可被改寫繞過；尚未以真實 LLM 測試防護效果。
 
 ---
 

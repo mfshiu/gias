@@ -59,6 +59,7 @@ from src.core.intention import (
 )
 from src.core.intention.response import ResponseComposer
 from src.security import log_broker_security
+from src.llm.untrusted import injection_signals
 from src.agents._executor_utils import (
     build_action_payload,
     build_cancel_payload,
@@ -445,6 +446,10 @@ class IntentionalAgent(Agent):
         也直接成為計畫的第一層（兩個以上時），planner 只為它們綁定動作、參數與先後。
         """
         norm = self.domain.normalize(intention)
+        # 常見的 prompt injection 語句：只記錄與標示，計畫仍受白名單、參數與前置條件驗證約束（S-04）
+        signals = injection_signals(norm)
+        if signals:
+            logger.warning("Possible prompt injection in intention (%s): %r", ", ".join(signals), norm[:200])
         subs = self.break_down_intention(norm)
 
         matched_pairs, unmatched = self._match_subs(subs)
@@ -499,6 +504,8 @@ class IntentionalAgent(Agent):
                 )
 
         plan.setdefault("debug", {})
+        if signals:
+            plan["debug"]["prompt_injection_signals"] = signals
         plan["debug"]["sub_intentions"] = [s.intent for s in subs]
         plan["debug"]["allowed_actions"] = sorted(allowed_action_names)
         if param_issues:

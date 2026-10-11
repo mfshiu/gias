@@ -135,9 +135,8 @@ class PromptRegistry:
         if user_text is not None and "user_text" not in variables:
             variables["user_text"] = user_text
 
-        rendered = self._substitute(raw, variables)
-
-        sections = self._split_by_roles(rendered)
+        # 先依模板切出角色段落，再代入變數：變數值（例如使用者輸入）中的 "---system" 不會變成新的角色訊息
+        sections = self._split_by_roles(raw)
 
         messages: List[Message] = []
         if sections:
@@ -145,12 +144,12 @@ class PromptRegistry:
             for role, content in sections:
                 if role not in self.ROLE_MARKERS:
                     raise PromptTemplateError(f"Unsupported role: {role}")
-                content = content.strip()
+                content = self._substitute(content, variables).strip()
                 if content:
                     messages.append({"role": role, "content": content})
         else:
             # 無 role 分段：整份視為 system
-            sys_content = rendered.strip()
+            sys_content = self._substitute(raw, variables).strip()
             if not sys_content and default_system:
                 sys_content = default_system.strip()
             if sys_content:

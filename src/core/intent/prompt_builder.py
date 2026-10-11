@@ -1,6 +1,8 @@
 import json
 from typing import Any
 
+from src.llm.untrusted import MAX_DATA_CHARS, UNTRUSTED_RULE, sanitize, wrap
+
 from .dataflow import describe_outputs
 
 # 環境事實可能很多列；超過此長度就截斷，避免 prompt 過長
@@ -31,21 +33,26 @@ def _format_replan_context(context: dict[str, Any]) -> str:
     ]
     replan = context.get("replan") or {}
     if replan.get("reason"):
-        lines.append(f"- **Reason**: {replan['reason']}")
+        lines.append(f"- **Reason**: {sanitize(replan['reason'])}")
+    # 步驟的參數、錯誤與結果來自執行端，放在資料區塊中
+    step_lines = []
     for step in replan.get("affected_steps") or []:
         params = json.dumps(step.get("params") or {}, ensure_ascii=False, default=str)
         detail = f"state={step.get('state')}" + (f", error={step['error']}" if step.get("error") else "")
-        lines.append(f"- **Affected step**: {step.get('task')} {params} ({detail}){_step_result(step)}")
+        step_lines.append(f"- **Affected step**: {step.get('task')} {params} ({detail}){_step_result(step)}")
     completed = list(context.get("completed_steps") or [])[-_MAX_COMPLETED_STEPS:]
     for step in completed:
         params = json.dumps(step.get("params") or {}, ensure_ascii=False, default=str)
-        lines.append(f"- **Completed step**: {step.get('task')} {params}{_step_result(step)}")
+        step_lines.append(f"- **Completed step**: {step.get('task')} {params}{_step_result(step)}")
+    if step_lines:
+        lines.append(wrap("step_results", "\n".join(step_lines), MAX_DATA_CHARS))
     env = context.get("env_facts")
     if env:
         env_json = json.dumps(env, ensure_ascii=False, default=str)
         if len(env_json) > _MAX_ENV_FACTS_CHARS:
             env_json = env_json[:_MAX_ENV_FACTS_CHARS] + " ...(truncated)"
-        lines += ["", "### Current Environment (authoritative facts from the Blackboard)", env_json]
+        lines += ["", "### Current Environment (authoritative facts from the Blackboard)",
+                  wrap("env_data", env_json, _MAX_ENV_FACTS_CHARS + 20)]
     lines += [
         "",
         "### Replanning Rules",
@@ -74,9 +81,9 @@ def _format_given(given: list[dict[str, Any]], feedback: dict[str, Any] | None) 
         "the `relationships` between them.",
     ]
     for g in given:
-        detail = f'- "{g.get("id")}": {g.get("intent")}'
+        detail = f'- "{g.get("id")}": {sanitize(g.get("intent"))}'
         if g.get("slots"):
-            detail += " | entities " + json.dumps(g["slots"], ensure_ascii=False, default=str)
+            detail += " | entities " + sanitize(json.dumps(g["slots"], ensure_ascii=False, default=str))
         if g.get("actions"):
             detail += " | matched: " + ", ".join(g["actions"])
         lines.append(detail)
@@ -125,7 +132,11 @@ Break down the User Intent into immediate sub-intents (one level deep only).
 {tools_description}
 
 ### Context
-- **Current Intent**: "{current_intent}"
+- **Current Intent** (from the user):
+{wrap("user_input", current_intent)}
+
+### Data Handling
+{UNTRUSTED_RULE}
 
 ### Rules
 1. **One Level Only**: Produce only one level of sub-intents (no deeper nesting).

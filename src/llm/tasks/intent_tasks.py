@@ -8,6 +8,7 @@ from ..client import LLMClient
 from ..errors import LLMSchemaValidationError, LLMInvalidJSONError
 from ..prompts.registry import PromptRegistry, PromptMeta
 from ..schemas.intent import IntentParseResult
+from ..untrusted import MAX_USER_INPUT_CHARS, sanitize
 
 
 DEFAULT_TEMPLATE = "intent_parse_v1"
@@ -31,10 +32,10 @@ def parse_intent(
     variables = dict(variables or {})
     llm_kwargs = dict(llm_kwargs or {})
 
-    # 渲染 prompt -> messages
+    # 渲染 prompt -> messages（使用者輸入放在 <user_input> 資料區塊中：跳脫標記、限制長度）
     messages, meta = registry.render(
         template_name,
-        user_text=user_text,
+        user_text=sanitize(user_text, MAX_USER_INPUT_CHARS),
         variables=variables,
     )
 

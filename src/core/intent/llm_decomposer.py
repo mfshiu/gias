@@ -1,5 +1,8 @@
 import json
 
+from src.llm.untrusted import UNTRUSTED_RULE
+
+
 class LLMDecomposer:
     def __init__(self, *, llm, prompt_builder, logger):
         self.llm = llm
@@ -10,7 +13,8 @@ class LLMDecomposer:
         try:
             resp = self.llm.chat(
                 messages=[
-                    {"role": "system", "content": "You are a specialized agent for Time-Aware HTN planning. Return ONLY valid JSON."},
+                    {"role": "system", "content": "You are a specialized agent for Time-Aware HTN planning. "
+                                                  "Return ONLY valid JSON. " + UNTRUSTED_RULE},
                     {"role": "user", "content": self.prompt_builder.build_prompt(intent, available_actions, context)},
                 ],
                 response_format={"type": "json_object"},

@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from src.llm.untrusted import UNTRUSTED_RULE, wrap
+
 @dataclass(frozen=True, slots=True)
 class ScopeDecision:
     can_execute: bool
@@ -54,12 +56,13 @@ class ScopeGate:
                     "Decide whether the user's intent can be completed using ONLY the available actions.\n"
                     "Do not rewrite the intent. Do not propose alternative tasks.\n"
                     "Return a single JSON object with fields: can_execute (boolean), reason (string).\n"
+                    + UNTRUSTED_RULE + "\n"
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"User intent:\n{user_intent}\n\n"
+                    f"User intent:\n{wrap('user_input', user_intent)}\n\n"
                     f"Available actions:\n{tools}\n\n"
                     "Return JSON:"
                 ),

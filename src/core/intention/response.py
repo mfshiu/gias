@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from src.core.intent.dataflow import step_outputs
+from src.llm.untrusted import MAX_DATA_CHARS, UNTRUSTED_RULE, wrap
 
 RESPONSE_MODES = ("llm", "template", "off")
 
@@ -25,7 +26,7 @@ _MAX_STEPS_JSON_CHARS = 6000
 
 _SYSTEM_PROMPT = (
     "You are a service assistant writing the final reply to a user whose request was carried out "
-    "as several steps by other agents."
+    "as several steps by other agents. " + UNTRUSTED_RULE
 )
 
 
@@ -107,10 +108,11 @@ class ResponseComposer:
             outcome = f"could not be planned: {reason}"
         else:
             outcome = "completed" if ok else "not fully completed"
-        prompt = f"""User request: {intent}
+        prompt = f"""User request:
+{wrap("user_input", intent)}
 Outcome: {outcome}
 Step results in execution order (JSON):
-{facts}
+{wrap("step_results", facts, MAX_DATA_CHARS + 20)}
 
 Write the reply to the user.
 - Reply in the language of the user request.
