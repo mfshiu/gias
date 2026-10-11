@@ -33,6 +33,7 @@ from .subscription import SubscriptionManager
 from .watcher import BlackboardWatcher, WatchTarget
 from .projection import ObservationProjection, projections_from_config
 from .access import AccessPolicy, check_cypher
+from src.security import log_broker_security
 
 
 logger = init_logging()
@@ -78,6 +79,8 @@ class BlackboardAgent(Agent):
             bb_cfg.get("projections"))
         # blackboard.control 的存取控制（[blackboard.access] token；見 access.py）
         self.access = AccessPolicy.from_config(agent_config)
+        # 明文或匿名的 MQTT 連線：啟動時提醒（S-02）
+        log_broker_security(agent_config, logger)
         if watch_targets is None and bb_cfg.get("watch_targets") is not None:
             watch_targets = [WatchTarget.from_config(item) for item in bb_cfg["watch_targets"]]
         self.watch_targets = watch_targets

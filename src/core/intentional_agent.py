@@ -58,6 +58,7 @@ from src.core.intention import (
     IntentionManager,
 )
 from src.core.intention.response import ResponseComposer
+from src.security import log_broker_security
 from src.agents._executor_utils import (
     build_action_payload,
     build_cancel_payload,
@@ -120,6 +121,8 @@ class IntentionalAgent(Agent):
         self.agent_config = agent_config
         self.intention = intention
         self.exit_when_idle = bool(intention) if exit_when_idle is None else bool(exit_when_idle)
+        # 明文或匿名的 MQTT 連線：啟動時提醒（S-02）
+        log_broker_security(agent_config, logger)
 
         # 完全使用 gias.toml（由 get_agent_config() 讀入的 agent_config）
         self.llm = LLMClient.from_config(agent_config)

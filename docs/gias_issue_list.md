@@ -89,7 +89,7 @@
 | **P-03** | 效能 | 黑板每 2 秒輪詢一次，做全量比對 | [watcher.py:49](../src/blackboard/watcher.py#L49) | 有延遲，資料量大時無法擴充 | 已修正（0dbeb5e） |
 | **G-01** | 通用性 | 只寫死了 info、navigation 兩個頻道，未知 topic 一律送往 info | [_executor_utils.py:31](../src/agents/_executor_utils.py#L31) | 新增一種執行端 Agent 就要改核心程式 | 已修正（4e5ea49） |
 | **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 已修正（ca497df） |
-| **S-02** | 安全 | MQTT 用明文帳密，沒有 TLS 或 ACL | `gias.toml` | 訊息可被竊聽或偽造 | 未處理 |
+| **S-02** | 安全 | MQTT 用明文帳密，沒有 TLS 或 ACL | `gias.toml` | 訊息可被竊聽或偽造 | 已修正 |
 | **S-03** | 安全 | OpenAI API 金鑰以明文存在 `gias.toml`（已在 .gitignore、沒被 git 追蹤） | `gias.toml` | 本機或備份檔（`_bak/*.7z`）外流時金鑰會一起外洩 | 未處理 |
 
 ## 四、低（11 項）
@@ -441,6 +441,25 @@ L-01 已讓 IntentionalAgent 依 `DomainProfile.env_subscriptions` 覆寫前綴�
 - 要啟用防護，需在 `gias.toml` 加上 `[blackboard.access] token`（所有元件共用同一份設定即可）；本次未修改 `gias.toml`
 - 金鑰隨 MQTT 明文傳送，broker 未啟用 TLS 時可被竊聽（S-02）
 - 持有金鑰的用戶端仍可執行任意（非危險語法的）寫入，例如刪除黑板節點；更細的權限（依用戶端限制可寫入的 Label）尚未實作
+
+### 2026-10-12：S-02
+
+依確認的方向：TLS 支援加在 AgentFlow 的 MQTT broker；ACL 採 GIAS 共用服務帳號、拒絕其他連線。完整步驟見 [`docs/mqtt_security.md`](mqtt_security.md)。
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 用戶端 TLS（AgentFlow） | MQTT broker 設定新增 `tls`：`true`（系統 CA）或 table（`ca_certs`、`certfile` / `keyfile`、`keyfile_password`、`ciphers`、`insecure`、`enabled`）；在連線前呼叫 `tls_set`（強制驗證 broker 憑證、TLS client 協定），`insecure` 才關閉主機名稱驗證。設定有誤或憑證讀不到時啟動失敗，不退回明文 | `D:\Work\SDK\AgentFlow` 的 `src/agentflow/broker/mqtt_broker.py`、`tests/unit/test_mqtt_broker_tls.py`（新） |
+| broker 設定範例 | Mosquitto：TLS listener（8883）、關閉匿名、密碼檔、ACL（GIAS 服務帳號可讀寫全部 topic，其他帳號只能用列出的 topic） | `deploy/mosquitto/mosquitto_tls.conf`、`deploy/mosquitto/gias_acl.conf`（新） |
+| 啟動檢查 | IntentionalAgent 與 BlackboardAgent 啟動時檢查 broker 設定：沒有 TLS、沒有帳號、或 TLS 不驗證主機名稱時記錄提醒（localhost 記為 INFO，其他主機記為 WARNING） | `src/security.py`（新）、`intentional_agent.py`、`blackboard/agent.py` |
+| 文件 | 憑證產生、帳號與 broker 設定、`gias.toml` 的 TLS 設定、確認方式 | `docs/mqtt_security.md`（新） |
+
+新增測試：GIAS 16 個（`tests/test_security.py`）、AgentFlow 13 個（`test_mqtt_broker_tls.py`，AgentFlow 全部單元測試 741 個通過），並以突變測試確認兩邊共 9 個關鍵行為在還原後會被測試抓到。GIAS 全部非 integration 測試（不含 `tests/kg`）共 1027 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+**注意**：
+- AgentFlow 的修改在另一個 repo，尚未 commit；GIAS 的 TLS 設定需要包含這個修改的 AgentFlow
+- 本次未修改 `gias.toml` 與 broker 實際設定；啟用時依 `docs/mqtt_security.md` 設定 broker 與 `gias.toml`
+- 未在真實的 TLS broker 上連線測試
+- 所有元件共用一個服務帳號；依角色分帳號尚未實作
 
 ---
 
