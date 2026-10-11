@@ -84,7 +84,7 @@
 | **C-08** | 正確性 | 判斷環境事件影響哪些節點時用子字串比對 | [trigger.py:219](../src/core/monitoring/trigger.py#L219) | "A1" 會誤中 "A12"，觸發不必要的重規劃 | 已修正（934c9c9） |
 | **A-03** | 架構落差 | 步驟之間不能傳遞資料，也沒有把結果彙整回覆給使用者的步驟 | [planner.py:161](../src/core/intent/planner.py#L161) | 多步驟任務無法串接，例如「推薦展品」的結果傳不到「規劃路線」 | 已修正（f98b410） |
 | **A-04** | 架構落差 | 同一個意圖被 LLM 拆兩次：`parse_intent` 的結果只用來比對動作，planner 又重新拆一次 | [intentional_agent.py:226](../src/core/intentional_agent.py#L226)、[intentional_agent.py:250](../src/core/intentional_agent.py#L250) | 兩次結果可能不一致，成本也加倍 | 已修正（33ffb33） |
-| **P-01** | 效能 | `select_actions` 不帶 slots 又比對一次，而且每個動作都再查一次 KG（N+1 查詢） | [action_selector.py:59](../src/core/intent/action_selector.py#L59)、[action_selector.py:32](../src/core/intent/action_selector.py#L32) | 規劃延遲變長，embedding 費用增加 | 未處理 |
+| **P-01** | 效能 | `select_actions` 不帶 slots 又比對一次，而且每個動作都再查一次 KG（N+1 查詢） | [action_selector.py:59](../src/core/intent/action_selector.py#L59)、[action_selector.py:32](../src/core/intent/action_selector.py#L32) | 規劃延遲變長，embedding 費用增加 | 已修正 |
 | **P-02** | 效能 | 每次比對都執行 `SHOW INDEXES` 加 `awaitIndex`；讀不到維度時還會 DROP 索引再重建 | [action_store.py:93](../src/kg/action_store.py#L93)、[action_matcher.py:235](../src/core/intent/action_matcher.py#L235) | 多了往返延遲，正式環境中索引可能被反覆重建 | 未處理 |
 | **P-03** | 效能 | 黑板每 2 秒輪詢一次，做全量比對 | [watcher.py:49](../src/blackboard/watcher.py#L49) | 有延遲，資料量大時無法擴充 | 未處理 |
 | **G-01** | 通用性 | 只寫死了 info、navigation 兩個頻道，未知 topic 一律送往 info | [_executor_utils.py:31](../src/agents/_executor_utils.py#L31) | 新增一種執行端 Agent 就要改核心程式 | 未處理 |
@@ -306,6 +306,20 @@ LLM 呼叫次數不變（解析、ScopeGate、根層拆解各一次），但比�
 新增測試 7 個，並以突變測試確認 10 個關鍵行為在還原後會被測試抓到。為配合介面修改 1 個既有測試（`select_actions` 與 `planner.plan` 的假實作接受新參數）。全部非 integration 測試（不含 `tests/kg`）共 921 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 **注意**：尚未在真實 LLM 上執行，LLM 是否穩定保留給定的子意圖需實測（不一致時最多多一次呼叫）。
+
+### 2026-10-11：P-01
+
+「`select_actions` 不帶 slots 又比對一次」已在 A-04 修正（直接使用第一次的比對結果）。本項處理剩下的 N+1 查詢：
+
+| 項目 | 修正前 | 修正後 | 主要檔案 |
+|---|---|---|---|
+| 選動作（產生動作清單） | 每個 Action 查參數、查輸出各一次（2N 次） | 所有 Action 以兩個批次查詢（`UNWIND`）取得，已快取的不再查 | `action_store.py`（`get_actions_schema`）、`action_selector.py` |
+| 規劃每個步驟 | 每個 atomic 節點查 Action、參數、前置條件、輸出、Agent 共 5 次，同一個 Action 出現幾次就查幾次 | 每個 Action 在快取時效內只查一次；各節點拿到的是副本 | `planner.py` |
+| 比對動作 | 每個候選 Action、每個子意圖、每次重規劃都查一次參數 | 經 ActionStore 快取 | `action_store.py` |
+
+快取（`src/kg/cache.py` 的 `TTLCache`）有時效：設定 `[intent] action_cache_ttl_sec`（預設 300 秒，≤ 0 不快取）；常駐服務在重新 seed 後，最晚這麼久會讀到新資料，也可呼叫 `ActionStore.clear_cache()`。查詢失敗不快取。動作清單的參數順序改為依宣告順序（與原本查詢相同），KG 查詢失敗時動作清單改為不列參數，不再中斷規劃。
+
+新增測試 9 個（`tests/intent/test_action_cache.py`），並以突變測試確認 8 個關鍵行為在還原後會被測試抓到。為配合批次查詢修改 1 個既有測試（假 KG 改為回應批次查詢）。全部非 integration 測試（不含 `tests/kg`）共 930 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 ---
 

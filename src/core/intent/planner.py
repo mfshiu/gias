@@ -1,4 +1,7 @@
+import copy
 import time
+
+from src.kg.cache import TTLCache
 
 from .action_params import match_param_key, normalize_params, parse_action_call
 
@@ -90,21 +93,32 @@ def _parse_inputs(raw, id_map: dict[str, str], schema: list[dict]) -> tuple[list
 
 
 class RecursivePlanner:
-    def __init__(self, *, decomposer, logger, kg=None, action_store=None, enum_alias=None):
+    def __init__(self, *, decomposer, logger, kg=None, action_store=None, enum_alias=None, cache_ttl_sec=300.0):
         self.decomposer = decomposer
         self.logger = logger
         self.kg = kg
         self.action_store = action_store
         # param_key -> {顯示值: enum 值}（DomainProfile.enum_alias），驗證 enum 參數時使用
         self.enum_alias = enum_alias or {}
+        # 同一個 Action 在多個步驟、多次重規劃中重複出現：metadata 與 Agent 查詢結果快取起來
+        self._cache = TTLCache(cache_ttl_sec)
 
     def _get_action_metadata(self, action_name: str) -> dict | None:
         """
-        取得 Action 的 topic、task、params 等可呼叫服務的資訊。
+        取得 Action 的 topic、task、params 等可呼叫服務的資訊（有快取；查詢失敗不快取）。
         回傳 {topic, task, action_id, params_schema, params} 或 None。
         """
         if not self.kg or not action_name:
             return None
+        hit, meta = self._cache.get(("meta", action_name))
+        if hit:
+            return meta
+        meta = self._load_action_metadata(action_name)
+        if meta is not None:
+            self._cache.put(("meta", action_name), meta)
+        return copy.deepcopy(meta)
+
+    def _load_action_metadata(self, action_name: str) -> dict | None:
         try:
             rows = self.kg.query(
                 """
@@ -197,11 +211,14 @@ class RecursivePlanner:
 
     def _get_agent_by_action(self, action_name: str) -> dict | None:
         """
-        依 Action 名稱查詢實作該 Action 的 Agent 資訊。
+        依 Action 名稱查詢實作該 Action 的 Agent 資訊（有快取；查詢失敗不快取）。
         回傳 {agent_id, agent_name, agent_description, agent_status} 或 None。
         """
         if not self.kg or not action_name:
             return None
+        hit, agent = self._cache.get(("agent", action_name))
+        if hit:
+            return agent
         try:
             rows = self.kg.read(
                 """
@@ -212,11 +229,12 @@ class RecursivePlanner:
                 """,
                 {"action_name": action_name},
             )
-            if rows:
-                return rows[0]
         except Exception as e:
             self.logger.debug("Failed to get agent by action %s: %s", action_name, e)
-        return None
+            return None
+        agent = rows[0] if rows else None
+        self._cache.put(("agent", action_name), agent)
+        return copy.deepcopy(agent)
 
     def plan(self, intent, available_actions, *, depth=0, max_depth=4, scheduled_start="N/A", node_id="root",
              context=None, upstream=None, given_sub_intents=None):

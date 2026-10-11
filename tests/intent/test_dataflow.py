@@ -275,10 +275,10 @@ def test_prompt_lists_upstream_outputs_and_completed_results():
 
 def test_selector_lists_outputs_in_action_descriptions():
     class KG:
-        def read(self, cypher, params=None):
+        def query(self, cypher, params=None, **kw):
             if "HAS_OUTPUT" in cypher:
-                return [BOOTHS] if params["name"] == "RecommendExhibits" else []
-            return [{"key": "interests", "ord": 0}]
+                return [{"action": "RecommendExhibits", **BOOTHS}]
+            return [{"action": name, "key": "interests", "order": 0} for name in params["names"]]
 
     sel = ActionSelector(kg=KG(), matcher=None, logger=logging.getLogger("t"))
     match = lambda name, desc: SimpleNamespace(action=SimpleNamespace(name=name, description=desc))

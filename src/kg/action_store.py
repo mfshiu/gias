@@ -3,10 +3,36 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from .cache import TTLCache
+
+_PARAM_COLUMNS = """
+            p.key AS key,
+            p.name AS name,
+            coalesce(p.desc, p.description) AS desc,
+            p.type AS type,
+            coalesce(r.required, p.required, false) AS required,
+            p.enum AS enum,
+            p.example AS example,
+            coalesce(r.order, 999) AS order"""
+
 
 class ActionStore:
-    def __init__(self, kg_adapter):
+    def __init__(self, kg_adapter, *, cache_ttl_sec: float = 300.0):
+        """cache_ttl_sec：Action 的參數、輸出、前置條件的快取時效（秒）；≤ 0 表示每次都查 KG。"""
         self.kg = kg_adapter
+        self._cache = TTLCache(cache_ttl_sec)
+
+    def clear_cache(self) -> None:
+        """重新 seed Action KG 後可呼叫，立即讀到新資料。"""
+        self._cache.clear()
+
+    def _cached(self, kind: str, action_name: str, load):
+        hit, value = self._cache.get((kind, action_name))
+        if hit:
+            return value
+        value = load()
+        self._cache.put((kind, action_name), value)
+        return value
 
     # ---------------------------
     # Index utilities (Neo4j 5.x)
@@ -123,25 +149,71 @@ class ActionStore:
     # ---------------------------
     def get_action_params(self, action_name: str) -> list[dict]:
         """取得 Action 的 params schema，相容 seed_actions（p.desc）與 seed_actions_simple（p.description）。"""
-        cypher = """
-        MATCH (a:Action {name:$name})-[r:HAS_PARAM]->(p:Param)
-        RETURN
-            p.key AS key,
-            p.name AS name,
-            coalesce(p.desc, p.description) AS desc,
-            p.type AS type,
-            coalesce(r.required, p.required, false) AS required,
-            p.enum AS enum,
-            p.example AS example
+        cypher = f"""
+        MATCH (a:Action {{name:$name}})-[r:HAS_PARAM]->(p:Param)
+        RETURN {_PARAM_COLUMNS}
         ORDER BY coalesce(r.required, p.required, false) DESC, coalesce(r.order, 999), p.key ASC
         """
-        return self.kg.query(cypher, {"name": action_name})
+        return self._cached("params", action_name, lambda: self.kg.query(cypher, {"name": action_name}) or [])
+
+    def get_actions_schema(self, action_names: list[str]) -> dict[str, dict[str, list[dict]]]:
+        """多個 Action 的參數與輸出：{name: {"params": [...], "outputs": [...]}}。
+
+        沒有快取的 Action 以兩個批次查詢取得（不再每個 Action 各查一次），結果放進快取。
+        """
+        names = list(dict.fromkeys(n for n in action_names if n))
+        result: dict[str, dict[str, list[dict]]] = {n: {} for n in names}
+        missing: dict[str, list[str]] = {"params": [], "outputs": []}
+        for name in names:
+            for kind in missing:
+                hit, value = self._cache.get((kind, name))
+                if hit:
+                    result[name][kind] = value
+                else:
+                    missing[kind].append(name)
+        if missing["params"]:
+            rows = self.kg.query(
+                f"""
+                UNWIND $names AS action
+                MATCH (a:Action {{name: action}})-[r:HAS_PARAM]->(p:Param)
+                RETURN action, {_PARAM_COLUMNS}
+                ORDER BY action, coalesce(r.required, p.required, false) DESC, coalesce(r.order, 999), p.key ASC
+                """,
+                {"names": missing["params"]},
+            ) or []
+            self._fill(result, "params", missing["params"], rows)
+        if missing["outputs"]:
+            rows = self.kg.query(
+                """
+                UNWIND $names AS action
+                MATCH (a:Action {name: action})-[r:HAS_OUTPUT]->(o:Output)
+                RETURN action, o.key AS key, o.name AS name, o.desc AS desc, o.type AS type
+                ORDER BY action, coalesce(r.order, 999), o.key
+                """,
+                {"names": missing["outputs"]},
+            ) or []
+            self._fill(result, "outputs", missing["outputs"], rows)
+        return result
+
+    def _fill(self, result: dict, kind: str, names: list[str], rows: list[dict]) -> None:
+        grouped: dict[str, list[dict]] = {n: [] for n in names}
+        for row in rows:
+            row = dict(row)
+            action = row.pop("action", None)
+            if action in grouped:
+                grouped[action].append(row)
+        for name, items in grouped.items():
+            result[name][kind] = items
+            self._cache.put((kind, name), items)
 
     # ---------------------------
     # Preconditions / effects（見 src/core/intent/preconditions.py）
     # ---------------------------
     def get_action_conditions(self, action_name: str) -> dict[str, list[dict]]:
         """取得 Action 的前置條件與效果：{"preconditions": [...], "effects": [...]}。"""
+        return self._cached("conditions", action_name, lambda: self._load_conditions(action_name))
+
+    def _load_conditions(self, action_name: str) -> dict[str, list[dict]]:
         rows = self.kg.query(
             """
             MATCH (a:Action {name:$name})
@@ -160,14 +232,14 @@ class ActionStore:
     # ---------------------------
     def get_action_outputs(self, action_name: str) -> list[dict]:
         """取得 Action 宣告的輸出：[{key, name, desc, type}]，依宣告順序。"""
-        return self.kg.query(
+        return self._cached("outputs", action_name, lambda: self.kg.query(
             """
             MATCH (a:Action {name:$name})-[r:HAS_OUTPUT]->(o:Output)
             RETURN o.key AS key, o.name AS name, o.desc AS desc, o.type AS type
             ORDER BY coalesce(r.order, 999), o.key
             """,
             {"name": action_name},
-        ) or []
+        ) or [])
 
     # ---------------------------
     # Vector search

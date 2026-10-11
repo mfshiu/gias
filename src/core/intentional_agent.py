@@ -130,7 +130,9 @@ class IntentionalAgent(Agent):
         self.domain = domain_profile or DomainProfile()
 
         self._kg = None
-        self.action_store = ActionStore(self.kg)
+        # Action 的參數、輸出、前置條件等查詢結果的快取時效（秒）；重新 seed 後最晚這麼久會讀到新資料
+        cache_ttl = float((agent_config.get("intent") or {}).get("action_cache_ttl_sec", 300))
+        self.action_store = ActionStore(self.kg, cache_ttl_sec=cache_ttl)
 
         # composed modules
         self.embedder = LLMEmbedder(self.llm)
@@ -143,7 +145,7 @@ class IntentionalAgent(Agent):
             min_score=float(matching.get("min_score", 0.75)),
             fallback_min_score=float(matching.get("fallback_min_score", 0.6)),
         )
-        self.selector = ActionSelector(kg=self.kg, matcher=self.matcher, logger=logger)
+        self.selector = ActionSelector(kg=self.kg, matcher=self.matcher, logger=logger, action_store=self.action_store)
         self.prompt_builder = PromptBuilder()
         self.decomposer = LLMDecomposer(llm=self.llm, prompt_builder=self.prompt_builder, logger=logger)
         self.planner = RecursivePlanner(
@@ -152,6 +154,7 @@ class IntentionalAgent(Agent):
             kg=self.kg,
             action_store=self.action_store,
             enum_alias=self.domain.enum_alias,
+            cache_ttl_sec=cache_ttl,
         )
         self.scope_gate = ScopeGate(llm=self.llm, logger=logger)
         # 意圖結束時給使用者的回覆（[intent.response] mode：llm / template / off）
