@@ -31,7 +31,7 @@ def mock_driver():
 
 @pytest.fixture
 def adapter(adapter_config, mock_driver):
-    with patch("kg.adapter_neo4j.GraphDatabase.driver", return_value=mock_driver):
+    with patch("src.kg.adapter_neo4j.GraphDatabase.driver", return_value=mock_driver):
         yield Neo4jBoltAdapter(adapter_config)
 
 

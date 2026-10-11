@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, Sequence
 
-from ..client import LLMResponse, LLMUsage, ProviderClient
+from ..types import LLMResponse, LLMUsage, ProviderClient
 
 
 @dataclass

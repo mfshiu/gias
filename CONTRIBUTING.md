@@ -44,7 +44,7 @@ git config core.hooksPath .githooks
 ## 3. 測試
 
 ```bash
-python -m pytest tests -m "not integration" --ignore=tests/kg -o addopts=""
+python -m pytest tests -m "not integration" -o addopts=""
 ```
 
 - 需要 repo 根目錄的 `gias.toml`（可由 `gias.example.toml` 複製）；單元測試不連真實的 Neo4j、MQTT 或 LLM
