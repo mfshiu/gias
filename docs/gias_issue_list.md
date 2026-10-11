@@ -67,7 +67,7 @@
 | **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（8b0cbce） |
 | **C-04** | 正確性 | 節點沒有逾時機制，`deadline_sec` 預設為 None | [intentional_agent.py:613](../src/core/intentional_agent.py#L613)、[budget.py:20](../src/core/monitoring/budget.py#L20) | 執行端掛掉或訊息遺失時，迴圈會永遠等待 | 已修正（8b0cbce） |
 | **C-10** | 正確性 | 環境事件或失敗觸發子樹／整體重規劃時，先取消執行中的步驟才產生新計畫；重規劃失敗時被取消的步驟被標為 OBSOLETE 而無聲丟棄，且 OBSOLETE 不計入成敗，可能回報成功 | [intentional_agent.py:`_apply_decision`](../src/core/intentional_agent.py) | 「先去 A 再去 B」：往 A 的途中重規劃失敗，A 被丟掉、B 完成後仍回報 ok=True | 已修正（934c9c9） |
-| **A-01** | 架構落差 | 意圖只是一個字串：沒有 Intention 模型和生命週期狀態，不支援多意圖、優先序或衝突管理，Agent 執行完就結束 | [intentional_agent.py:70](../src/core/intentional_agent.py#L70)、[intentional_agent.py:136](../src/core/intentional_agent.py#L136) | 「跨時間維持意圖」與 Bratman 意圖理論的主張沒有落實 | 已修正 |
+| **A-01** | 架構落差 | 意圖只是一個字串：沒有 Intention 模型和生命週期狀態，不支援多意圖、優先序或衝突管理，Agent 執行完就結束 | [intentional_agent.py:70](../src/core/intentional_agent.py#L70)、[intentional_agent.py:136](../src/core/intentional_agent.py#L136) | 「跨時間維持意圖」與 Bratman 意圖理論的主張沒有落實 | 已修正（08db68b） |
 | **A-02** | 架構落差 | 前置條件驗證沒有實作：Action KG 沒有前置條件和效果，`preconditions_by_action`、`conflicts_between_intents` 已寫好卻從未被呼叫 | [queries.py:211](../src/kg/queries.py#L211)、[queries.py:233](../src/kg/queries.py#L233) | 摘要所說「KG-RAG 提供前置條件驗證」與程式不符；LLM 產生的計畫沒有符號層面的驗證 | 未處理 |
 | **S-01** | 安全 | `blackboard.control` 會執行任何 MQTT 用戶端送來的 Cypher，沒有白名單也沒有權限控管 | [blackboard/agent.py:212](../src/blackboard/agent.py#L212)、[blackboard/agent.py:232](../src/blackboard/agent.py#L232) | 任何連得上 broker 的人都能讀取或刪除整個黑板 | 未處理 |
 | **E-01** | 工程品質 | 核心監測子系統 `src/core/monitoring/` 還沒加入 git 追蹤，另有約 1,100 行修改未 commit | `src/core/monitoring/` | 程式可能遺失，版本也無法追溯 | 已修正（c2ab5bf） |
@@ -229,7 +229,7 @@ L-04 已讓 `adapted` 進度事件用於監測判斷；這次讓其他進度事�
 新增測試 7 個，並以突變測試確認關鍵測試在還原修正後會失敗（包括「進度不可延長節點自訂截止時間」）。全部非 integration 測試共 803 個通過、10 個略過。
 
 
-### 2026-10-11：A-01
+### 2026-10-11：A-01（commit 08db68b）
 
 依確認的方向實作：依優先序排隊並可搶占、寫入 Blackboard 但不自動恢復、MQTT 與 Python API 兩種介面。完整介面見 [`docs/intention_protocol.md`](intention_protocol.md)。
 
