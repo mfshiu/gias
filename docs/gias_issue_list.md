@@ -88,7 +88,7 @@
 | **P-02** | 效能 | 每次比對都執行 `SHOW INDEXES` 加 `awaitIndex`；讀不到維度時還會 DROP 索引再重建 | [action_store.py:93](../src/kg/action_store.py#L93)、[action_matcher.py:235](../src/core/intent/action_matcher.py#L235) | 多了往返延遲，正式環境中索引可能被反覆重建 | 已修正（814d66b） |
 | **P-03** | 效能 | 黑板每 2 秒輪詢一次，做全量比對 | [watcher.py:49](../src/blackboard/watcher.py#L49) | 有延遲，資料量大時無法擴充 | 已修正（0dbeb5e） |
 | **G-01** | 通用性 | 只寫死了 info、navigation 兩個頻道，未知 topic 一律送往 info | [_executor_utils.py:31](../src/agents/_executor_utils.py#L31) | 新增一種執行端 Agent 就要改核心程式 | 已修正（4e5ea49） |
-| **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 已修正 |
+| **G-02** | 通用性 | 觸發條件只看 `Zone/`、`Booth/` 開頭的主題 | [trigger.py:38](../src/core/monitoring/trigger.py#L38) | 綁死展場領域，「通用」的主張打折 | 已修正（ca497df） |
 | **S-02** | 安全 | MQTT 用明文帳密，沒有 TLS 或 ACL | `gias.toml` | 訊息可被竊聽或偽造 | 未處理 |
 | **S-03** | 安全 | OpenAI API 金鑰以明文存在 `gias.toml`（已在 .gitignore、沒被 git 追蹤） | `gias.toml` | 本機或備份檔（`_bak/*.7z`）外流時金鑰會一起外洩 | 未處理 |
 
@@ -400,7 +400,7 @@ BlackboardAgent 預設仍把每個變動廣播到 `blackboard.event.*`（`[black
 
 **仍未涵蓋**：InfoAgent 與 NavigationAgent 處理派工、取消、冪等與結果的程式重複；可再抽成共用的執行端基底類別，讓新增執行端只需實作任務本身。
 
-### 2026-10-12：G-02
+### 2026-10-12：G-02（commit ca497df）
 
 L-01 已讓 IntentionalAgent 依 `DomainProfile.env_subscriptions` 覆寫前綴，本項移除其餘的領域綁定：
 
