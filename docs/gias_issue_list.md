@@ -98,7 +98,7 @@
 |---|---|---|---|---|
 | **L-05** | 閉環／監測 | 進度訊息只寫進 log，沒有用在監測判斷 | [monitor.py:84](../src/core/monitoring/monitor.py#L84) | 已修正（165b73b） |
 | **C-09** | 正確性 | `BudgetGuard.exhausted()` 只看 deadline，和它的註解、文件描述不符 | [budget.py:73](../src/core/monitoring/budget.py#L73) | 已修正（9749343） |
-| **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 未處理 |
+| **P-04** | 效能 | 沒有 embedding 快取（`llm/cache.py` 已存在但沒被使用） | [cache.py](../src/llm/cache.py) | 已修正 |
 | **P-05** | 效能 | Planner 遞迴時固定 `sleep(0.1)`，子意圖逐一處理、沒有平行化 | [planner.py:183](../src/core/intent/planner.py#L183) | 未處理 |
 | **G-03** | 通用性 | BlackboardAgent 裡寫死了展場專用的寫入邏輯（Zone/Booth） | [blackboard/agent.py:246](../src/blackboard/agent.py#L246) | 未處理 |
 | **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 未處理 |
@@ -353,6 +353,23 @@ BlackboardAgent 預設仍把每個變動廣播到 `blackboard.event.*`（`[black
 新增測試 8 個（`tests/blackboard/test_watcher.py`，以記憶體中的假黑板模擬），含計時的測試連續重跑 5 次皆通過，並以突變測試確認 10 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 947 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 **注意**：尚未在真實的 Neo4j / MQTT 上執行（BlackboardAgent 的整合測試需要真實服務）。資料量很大時每輪仍是全量比對，要根本解決需改用 Neo4j Enterprise 的 CDC，或讓所有寫入都經過 BlackboardAgent。
+
+### 2026-10-12：P-04
+
+`src/llm/cache.py` 原本的 `LLMCache`（無上限的 dict，沒有任何地方使用）改寫為 embedding 專用的 `EmbeddingCache`，接進 `LLMClient.embed_text`：
+
+| 項目 | 內容 |
+|---|---|
+| key | provider、embedding 模型、會影響結果的參數（例如 `dimensions`）、文字；`timeout` 與重試參數不列入 |
+| 容量 | LRU，`[llm] embedding_cache_size`（預設 2048 筆，0 表示不快取）；同一模型對同一段文字的向量固定，不設時效 |
+| 共用 | 同一個 process 內由 `from_config` 建立的 LLMClient 共用一份（例如 benchmark 每個案例建立新的 IntentionalAgent、比對與重規劃重複出現的子意圖），容量取各設定中最大者 |
+| 失敗 | API 失敗不快取；回傳值是副本，呼叫端修改不影響快取 |
+
+對話（chat）回應不快取：重新規劃與前置條件的修正規劃會用相同或相近的 prompt 再問一次，期待得到不同的結果。
+
+新增測試 6 個（`tests/llm/test_embedding_cache.py`），並以突變測試確認 8 個關鍵行為在還原後會被測試抓到。全部非 integration 測試（不含 `tests/kg`）共 953 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+**仍未涵蓋**：快取只在記憶體中，process 結束即消失；若校準工具或 benchmark 需要跨次執行重用，可再加上寫入檔案的快取。
 
 ---
 

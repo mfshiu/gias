@@ -13,6 +13,8 @@ class LLMRuntimeConfig:
     max_retries: int = 2
     retry_backoff: float = 1.5
     retry_jitter: float = 0.1
+    # embedding 快取筆數（process 內共用的 LRU）；0 表示不快取
+    embedding_cache_size: int = 2048
 
     # openai
     openai_api_key: Optional[str] = None
@@ -35,6 +37,7 @@ def load_llm_runtime_config(agent_config: Dict[str, Any]) -> LLMRuntimeConfig:
     max_retries = int(llm_cfg.get("max_retries", 2))
     backoff = float(llm_cfg.get("retry_backoff", 1.5))
     jitter = float(llm_cfg.get("retry_jitter", 0.1))
+    embedding_cache_size = int(llm_cfg.get("embedding_cache_size", 2048))
 
     openai_cfg = llm_cfg.get("openai") or {}
     ollama_cfg = llm_cfg.get("ollama") or {}
@@ -52,6 +55,7 @@ def load_llm_runtime_config(agent_config: Dict[str, Any]) -> LLMRuntimeConfig:
         max_retries=max_retries,
         retry_backoff=backoff,
         retry_jitter=jitter,
+        embedding_cache_size=embedding_cache_size,
         openai_api_key=openai_api_key,
         openai_embed_model=openai_embed_model,
         ollama_base_url=ollama_base_url,

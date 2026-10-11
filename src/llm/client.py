@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence
 from typing import cast
 from .types import EmbeddingProviderClient, LLMResponse, ProviderClient, SchemaType
+from .cache import EmbeddingCache, shared_embedding_cache
 from .config import load_llm_runtime_config
 from .providers.factory import build_provider_client
 from .retry import call_with_retry, is_retriable_exception
@@ -19,6 +20,10 @@ from .errors import (
     LLMRateLimitError,
     LLMEmbeddingNotSupportedError,
 )
+
+
+# 只影響呼叫方式、不影響結果的參數（不列入 embedding 快取的 key）
+_CALL_ONLY_KWARGS = frozenset({"timeout", "max_retries", "retry_backoff", "retry_jitter"})
 
 
 class LLMClient:
@@ -34,6 +39,7 @@ class LLMClient:
         strict_json: bool,
         default_embed_model: Optional[str],
         openai_api_key: Optional[str],
+        embedding_cache: Optional[EmbeddingCache] = None,
     ):
         self.provider_client = provider_client
         self.provider_name = (provider_name or "openai").lower()
@@ -47,6 +53,8 @@ class LLMClient:
         self.default_embed_model = default_embed_model
         self._openai_api_key = openai_api_key
         self._openai_client = None
+        # None 表示不快取 embedding
+        self.embedding_cache = embedding_cache
 
     @classmethod
     def from_config(cls, agent_config: dict) -> "LLMClient":
@@ -63,6 +71,7 @@ class LLMClient:
             strict_json=cfg.strict_json,
             default_embed_model=embed_model,
             openai_api_key=openai_api_key,
+            embedding_cache=shared_embedding_cache(cfg.embedding_cache_size) if cfg.embedding_cache_size > 0 else None,
         )
 
     # ---- Public API ----
@@ -78,8 +87,17 @@ class LLMClient:
         return validate_schema(obj, schema)
 
     def embed_text(self, text: str, **kwargs) -> List[float]:
-        raw = self._call_embed(text, **kwargs)
-        return normalize_embedding(raw)
+        """文字的 embedding；有快取時，同一模型對同一段文字只呼叫一次 API。"""
+        cache = self.embedding_cache
+        if cache is None:
+            return normalize_embedding(self._call_embed(text, **kwargs))
+        options = {k: v for k, v in kwargs.items() if k not in _CALL_ONLY_KWARGS and k != "model"}
+        key = cache.key(self.provider_name, kwargs.get("model") or self.default_embed_model, text, options)
+        vec = cache.get(key)
+        if vec is None:
+            vec = normalize_embedding(self._call_embed(text, **kwargs))
+            cache.put(key, vec)
+        return vec
 
     # ---- Internal: chat ----
 
