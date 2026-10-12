@@ -61,7 +61,7 @@
 |---|---|---|---|---|---|
 | **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 已修正（1d7d19e；標示為只驗證規劃，由 navigation_scenario live 模式取代） |
 | **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 已修正（ccbcdbd；標示為獨立的出題管線，沒有經過 IntentionalAgent） |
-| **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 未處理 |
+| **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 不處理（repo 中沒有消融實驗的程式；對照實驗只用於驗證，不影響框架本身） |
 | **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（3b4495c） |
 | **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（3b4495c） |
 | **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（8b0cbce） |
@@ -114,7 +114,7 @@
 
 1. **先修小而明確的 bug：** C-01、C-02、C-03、C-04，每項都能在一個檔案內修好並補回歸測試。
 2. **接通閉環：** L-01 → L-02 → L-03。
-3. **補實驗：** 先做 V-01、V-02（導航實驗加上真的跑 GIAS 的 `--live` 模式），再補 V-05 的消融實驗程式。
+3. **補實驗：** 先做 V-01、V-02（導航實驗加上真的跑 GIAS 的 `--live` 模式），再補 V-05 的消融實驗程式。（V-05 後來決定不處理，見修正紀錄）
 4. **補論文核心機制：** A-01、A-02。
 5. **安全與工程：** S-01、E-01 盡早處理，其餘可以慢慢清。
 
@@ -608,6 +608,14 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 **注意**：
 - `genexam_scenario_results/` 不在版本控制內；本機既有的結果與報告沒有重新產生，重跑 `python -m genexam_scenario.analyze <run_dir>` 即可加上標示
 - GenExam 沒有像 navigation_scenario 那樣的 live 模式，GIAS 在試題生成這個領域仍沒有端到端驗證
+
+### 2026-10-12：V-05（不處理）
+
+決定不處理，沒有修改程式。理由：
+- repo 中沒有任何消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）的程式、設定或結果檔，`IPM` 這個名稱在程式碼中也沒有出現，沒有可沿用的基礎
+- 這些對照實驗只用於驗證各元件的貢獻，不影響框架本身的功能
+
+若之後需要對照組，較可行的做法是在 navigation_scenario 的 live 模式加上可切換的變體（例如關閉監測與重規劃、不用 Action KG 比對、只用 LLM 規劃），並在結果中標示變體名稱；屆時另開項目。「一般 RAG」與「拿掉 MAS」需要另外設計。
 
 ---
 
