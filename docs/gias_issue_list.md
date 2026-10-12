@@ -62,7 +62,7 @@
 | **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 已修正（1d7d19e；標示為只驗證規劃，由 navigation_scenario live 模式取代） |
 | **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 已修正（ccbcdbd；標示為獨立的出題管線，沒有經過 IntentionalAgent） |
 | **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 不處理（repo 中沒有消融實驗的程式；對照實驗只用於驗證，不影響框架本身） |
-| **V-07** | 實驗驗證 | GenExam 的 CSR、SC 只計算通過驗證的題目，且沿用驗證時的同一套規則（`_check_constraints`、`_is_schema_consistent`）；未使用 `--llm-judge` 時，限制比對的是 LLM 自己標示的難度／Bloom／題型 | [runner.py:935](../genexam_scenario/runner.py#L935)、[metrics.py:253](../genexam_scenario/metrics.py#L253) | 只要有題目通過，SC 必為 100%，CSR 也是（使用 `--llm-judge` 時例外），Task Success 等於題數是否達標；報告中的 100% 不能當作題目實際符合限制的證據（V-04 已在報告中標示） | 已修正（分母改為要求題數，CSR 由獨立的 LLM 評審判定） |
+| **V-07** | 實驗驗證 | GenExam 的 CSR、SC 只計算通過驗證的題目，且沿用驗證時的同一套規則（`_check_constraints`、`_is_schema_consistent`）；未使用 `--llm-judge` 時，限制比對的是 LLM 自己標示的難度／Bloom／題型 | [runner.py:935](../genexam_scenario/runner.py#L935)、[metrics.py:253](../genexam_scenario/metrics.py#L253) | 只要有題目通過，SC 必為 100%，CSR 也是（使用 `--llm-judge` 時例外），Task Success 等於題數是否達標；報告中的 100% 不能當作題目實際符合限制的證據（V-04 已在報告中標示） | 已修正（2f90bcc；分母改為要求題數，CSR 由獨立的 LLM 評審判定） |
 | **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（3b4495c） |
 | **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（3b4495c） |
 | **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（8b0cbce） |
@@ -635,7 +635,7 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 - `build_result` 的預設由 `simulated=true` 改為 `false`：依頻道慣例新增的執行端若只回固定訊息，需自行傳 `simulated=True`（或覆寫 `is_simulated`）
 - 內建執行端仍是示範用途；實際部署時依頻道慣例接上自己的執行端
 
-### 2026-10-13：V-07
+### 2026-10-13：V-07（commit 2f90bcc）
 
 依選擇，CSR、SC 改以要求的題數為分母，CSR 改由獨立的 LLM 評審判定：
 
