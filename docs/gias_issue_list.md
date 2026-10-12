@@ -76,7 +76,7 @@
 
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
-| **V-06** | 實驗驗證 | 執行端 Agent 都是模擬的：回傳 `"simulated": True` 和固定訊息 | [_executor_utils.py:158](../src/agents/_executor_utils.py#L158) | 「任務成功」不代表任務真的完成 | 已修正（標記改為逐個 task 聲明，並傳到意圖結果與回覆） |
+| **V-06** | 實驗驗證 | 執行端 Agent 都是模擬的：回傳 `"simulated": True` 和固定訊息 | [_executor_utils.py:158](../src/agents/_executor_utils.py#L158) | 「任務成功」不代表任務真的完成 | 已修正（e31e100；標記改為逐個 task 聲明，並傳到意圖結果與回覆） |
 | **L-04** | 閉環／監測 | 動態調適發生在 NavigationAgent 內部（自己查兩次黑板），意圖層並不知道 | [navigation_agent.py:98](../src/agents/navigation_agent.py#L98) | 調適能力歸屬在執行端，不在 IPM，和架構敘述不一致 | 已修正（5cf062a） |
 | **C-05** | 正確性 | 有依賴循環時，相關節點會被當成孤兒放到第一層先執行，而且沒有警告 | [cursor.py:191](../src/core/monitoring/cursor.py#L191) | 違反執行順序 | 已修正（059947d） |
 | **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 已修正（059947d） |
@@ -617,7 +617,7 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 
 若之後需要對照組，較可行的做法是在 navigation_scenario 的 live 模式加上可切換的變體（例如關閉監測與重規劃、不用 Action KG 比對、只用 LLM 規劃），並在結果中標示變體名稱；屆時另開項目。「一般 RAG」與「拿掉 MAS」需要另外設計。
 
-### 2026-10-12：V-06
+### 2026-10-12：V-06（commit e31e100）
 
 依選擇，內建執行端維持示範用途，但「模擬」標記改為正確，並傳到意圖層：
 
