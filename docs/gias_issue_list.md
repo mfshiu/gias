@@ -105,7 +105,7 @@
 | **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 已修正（a873e97） |
 | **E-03** | 工程品質 | 有空殼或沒被使用的模組：`llm/cache`、`router`、`policy`、`observability`，`schemas/plan.py`、`eval.py`，`tasks/planning_tasks.py`、`evaluation_tasks.py`，`kg/client.py` | `src/llm/`、`src/kg/` | 已修正（379b75d） |
 | **E-04** | 工程品質 | `print` 和 logger 混用，log 層級無法統一控制 | `planner.py`、`src/agents/*` | 已修正（8aa32f6） |
-| **E-05** | 工程品質 | OpenAI 聊天模型寫死成 `gpt-4.1-mini`，無法從 toml 設定 | [openai_provider.py:41](../src/llm/providers/openai_provider.py#L41) | 已修正 |
+| **E-05** | 工程品質 | OpenAI 聊天模型寫死成 `gpt-4.1-mini`，無法從 toml 設定 | [openai_provider.py:41](../src/llm/providers/openai_provider.py#L41) | 已修正（2be2b52） |
 | **E-06** | 工程品質 | 沒有 CI（`.github/` 是空的），548 個離線測試沒有自動執行 | `.github/` | 未處理 |
 
 ---
@@ -535,7 +535,7 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 
 新增測試 5 個（`tests/test_logging_config.py`），並以突變測試確認 4 個關鍵行為在還原後會被測試抓到。全部非 integration 測試共 1084 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
-### 2026-10-12：E-05
+### 2026-10-12：E-05（commit 2be2b52）
 
 `[llm.openai]` 新增三個設定，與 `[llm.ollama] model` 對稱；未設定時行為不變：
 
