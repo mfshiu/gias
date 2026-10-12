@@ -106,7 +106,7 @@
 | **E-03** | 工程品質 | 有空殼或沒被使用的模組：`llm/cache`、`router`、`policy`、`observability`，`schemas/plan.py`、`eval.py`，`tasks/planning_tasks.py`、`evaluation_tasks.py`，`kg/client.py` | `src/llm/`、`src/kg/` | 已修正（379b75d） |
 | **E-04** | 工程品質 | `print` 和 logger 混用，log 層級無法統一控制 | `planner.py`、`src/agents/*` | 已修正（8aa32f6） |
 | **E-05** | 工程品質 | OpenAI 聊天模型寫死成 `gpt-4.1-mini`，無法從 toml 設定 | [openai_provider.py:41](../src/llm/providers/openai_provider.py#L41) | 已修正（2be2b52） |
-| **E-06** | 工程品質 | 沒有 CI（`.github/` 是空的），548 個離線測試沒有自動執行 | `.github/` | 未處理 |
+| **E-06** | 工程品質 | 沒有 CI（`.github/` 是空的），548 個離線測試沒有自動執行 | `.github/` | 已修正 |
 
 ---
 
@@ -548,6 +548,25 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 主要檔案：`src/llm/config.py`、`src/llm/providers/factory.py`、`openai_provider.py`；`gias.example.toml` 已加上這些設定（本次未修改 `gias.toml`）。
 
 新增測試 8 個（`tests/llm/test_openai_config.py`），並以突變測試確認 4 個關鍵行為在還原後會被測試抓到。全部非 integration 測試共 1092 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
+
+### 2026-10-12：E-06
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| CI | GitHub Actions：push 到 `main`、pull request、手動觸發時，在 Ubuntu 與 Windows（Python 3.14）安裝相依套件並執行離線測試（`-m "not integration"`） | `.github/workflows/tests.yml`（新） |
+| 相依套件 | repo 原本沒有相依套件清單；新增 `requirements.txt`（目前測試過的版本；AgentFlow 以 GitHub 上的 commit 安裝）與 `requirements-dev.txt`（加上 pytest） | `requirements.txt`、`requirements-dev.txt`（新） |
+| 測試不依賴本機設定 | `tests/test_execute_plan.py` 的備援設定缺少 `neo4j_actions`，沒有 `gias.toml` 時 12 個測試失敗；觀察者整合測試在沒有 `gias.toml` 時出錯（改為略過，與連不到 broker 時一致） | `tests/test_execute_plan.py`、`tests/observer/test_observer_integration.py` |
+| 既有失敗 | `test_log_colors_visual` 原本只能搭配 `-s` 目視（pytest 下 log 交給 root，不寫到 stdout/stderr），一直失敗；改為掛自己的 stderr handler，平常可驗證、`-s` 時仍可目視 | `tests/test_log_colors.py` |
+
+驗證：
+- 在全新虛擬環境依 `requirements-dev.txt` 安裝（AgentFlow 從 GitHub 安裝），於沒有 `gias.toml` 的工作目錄執行：1093 個通過、10 個略過、0 個失敗
+- GIAS 測試在 AgentFlow GitHub `main`（61e92c9）與本機 AgentFlow 上結果相同
+- 本機（有 `gias.toml`）完整回歸：1093 個通過、10 個略過、0 個失敗
+
+**注意**：
+- CI 在 push 到 GitHub 後才會執行；本機 `main` 目前比 `origin/main` 多 50 個以上的 commit，尚未 push
+- 未在 Linux 上實際執行過；第一次 CI 執行會驗證 Ubuntu 與 Windows 兩個環境
+- AgentFlow 固定在 GitHub 上的 commit；S-02 的 TLS 修改在 AgentFlow 端 commit 並 push 後，需更新 `requirements.txt` 中的 commit
 
 ---
 

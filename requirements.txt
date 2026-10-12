@@ -1,0 +1,14 @@
+# GIAS 執行所需套件（以 Python 3.14 測試的版本）
+# 安裝：python -m pip install -r requirements.txt
+
+# AgentFlow（MAS 框架）：GitHub 上 mfshiu/AgentFlow 的 main（2026-10-12 驗證過的 commit）
+# 本機開發若以 editable 方式安裝 D:/Work/SDK/AgentFlow，可略過這一行
+mas-agentflow @ git+https://github.com/mfshiu/AgentFlow.git@61e92c92899fafb7c4d1e09ddf9f4fc2f929b011
+
+colorama==0.4.6
+neo4j==6.1.0
+openai==2.14.0
+paho-mqtt==2.1.0
+pydantic==2.12.5
+python-dotenv==1.2.1
+toml==0.10.2

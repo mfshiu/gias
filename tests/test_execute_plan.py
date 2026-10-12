@@ -33,7 +33,7 @@ def _minimal_agent_config() -> dict:
         "llm": {"provider": "mock"},
         "broker": {"broker_name": "mqtt01"},
         "broker.mqtt01": {"broker_type": "mqtt", "host": "localhost", "port": 1883},
-        "kg": {"type": "neo4j", "neo4j": {"uri": "bolt://localhost:7687"}},
+        "kg": {"type": "neo4j", "neo4j": {"uri": "bolt://localhost:7687"}, "neo4j_actions": {}},
     }
 
 

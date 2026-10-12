@@ -53,12 +53,29 @@ git config core.hooksPath .githooks
 
 ---
 
-## 4. 測試
+## 4. 環境與測試
+
+安裝（Python 3.14；AgentFlow 由 GitHub 指定的 commit 安裝，本機改以 editable 方式開發 AgentFlow 時可略過該行）：
 
 ```bash
-python -m pytest tests -m "not integration" -o addopts=""
+python -m pip install -r requirements-dev.txt
 ```
 
-- 需要 repo 根目錄的 `gias.toml`（可由 `gias.example.toml` 複製）；單元測試不連真實的 Neo4j、MQTT 或 LLM
+離線測試（不連 Neo4j、MQTT broker 或 LLM）：
+
+```bash
+python -m pytest tests -m "not integration" -o addopts="" -o log_cli=false
+```
+
+- 不需要 `gias.toml`：沒有時測試改用內建的最小設定（mock LLM），需要真實服務的測試會略過
+- 有 `gias.toml` 時部分測試會讀取它（可由 `gias.example.toml` 複製）；設定與機密見 `docs/secrets.md`
 - `-m integration` 的測試需要真實服務
-- 設定與機密見 `docs/secrets.md`
+
+---
+
+## 5. CI
+
+`.github/workflows/tests.yml`：push 到 `main`、開 pull request 或手動觸發時，在 Ubuntu 與 Windows（Python 3.14）
+以 `requirements-dev.txt` 安裝相依套件並執行離線測試。
+
+更新相依套件時同步修改 `requirements.txt`（例：AgentFlow 的 commit）；CI 會以新版本驗證。

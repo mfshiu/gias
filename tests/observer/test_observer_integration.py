@@ -341,8 +341,11 @@ class MockDigitalObserver(SimulatedDigitalObserver):
 
 @pytest.fixture(scope="module")
 def agent_config():
-    """載入 agent 設定"""
-    cfg = get_agent_config()
+    """載入 agent 設定（需要 gias.toml 與真實的 broker / Neo4j，否則略過）"""
+    try:
+        cfg = get_agent_config()
+    except FileNotFoundError:
+        pytest.skip("gias.toml not found")
     _require_broker_config(cfg)
     _require_blackboard_kg_ready(cfg)
     return cfg

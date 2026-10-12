@@ -5,6 +5,7 @@
 
 import io
 import logging
+import sys
 
 import pytest
 
@@ -144,20 +145,26 @@ def test_log_colors_visual(capsys):
     """
     視覺測試：執行時用 -s 可看到實際顏色。
     python -m pytest tests/test_log_colors.py::test_log_colors_visual -s
-    """
-    log = logging.getLogger("gias")
-    log.setLevel(LOGGING_LEVEL_VERBOSE)
-    for h in log.handlers:
-        h.setLevel(LOGGING_LEVEL_VERBOSE)
 
-    log.verbose("VERBOSE 深灰")
-    log.debug("DEBUG 淺灰")
-    log.info("INFO 白")
-    log.warning("WARNING 黃")
-    log.error("ERROR 紅")
+    pytest 會把 gias logger 交給 root（不直接寫到 stderr），所以這裡掛一個自己的 stderr handler。
+    """
+    log = logging.getLogger("gias.visual_colors")
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(ColorFormatter("%(levelname)1.1s %(message)s"))
+    log.handlers[:] = [handler]
+    log.propagate = False
+    log.setLevel(LOGGING_LEVEL_VERBOSE)
+    try:
+        log.verbose("VERBOSE 深灰")
+        log.debug("DEBUG 淺灰")
+        log.info("INFO 白")
+        log.warning("WARNING 黃")
+        log.error("ERROR 紅")
+    finally:
+        log.handlers.clear()
 
     captured = capsys.readouterr()
-    # log 預設輸出到 stderr
     out = captured.out + captured.err
-    assert "DEBUG" in out or "淺灰" in out
-    assert "ERROR" in out or "紅" in out
+    assert "DEBUG 淺灰" in out and "ERROR 紅" in out
+    assert _RED + "E ERROR 紅" + _RESET in out
+    print(out, file=sys.__stderr__)     # 用 -s 執行時顯示實際顏色

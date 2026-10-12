@@ -1,0 +1,6 @@
+# 開發與測試用（含 requirements.txt）
+-r requirements.txt
+pytest==9.0.2
+
+# src/tools 產生 docx 文件時才需要：
+# python-docx==1.2.0
