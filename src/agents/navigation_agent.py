@@ -64,11 +64,9 @@ def _simulate_progress(
     """
     for i, msg in enumerate(steps, 1):
         if cancel_token is not None and cancel_token.cancelled:
-            print(f"  [NavigationAgent] (cancelled at step {i-1}/{len(steps)})", flush=True)
-            logger.info("NavigationAgent progress cancelled: reason=%s", cancel_token.reason)
+            logger.info("NavigationAgent cancelled at step %d/%d: reason=%s", i - 1, len(steps), cancel_token.reason)
             return False
-        print(f"  [NavigationAgent] {i}/{len(steps)} {msg}", flush=True)
-        logger.info("NavigationAgent progress: %s", msg)
+        logger.info("NavigationAgent %d/%d %s", i, len(steps), msg)
         slept = 0.0
         slice_dt = 0.05
         while slept < delay:
@@ -133,22 +131,16 @@ def _execute_with_replan(
     hotspots_1 = get_crowd_hotspots(agent)
     crowded_1 = sorted(_crowded_zones_from_hotspots(hotspots_1))
     if crowded_1:
-        print(
-            f"  [NavigationAgent] >>> 初步規劃：避開擁擠區 {', '.join(crowded_1)}",
-            flush=True,
-        )
+        logger.info("NavigationAgent 初步規劃：避開擁擠區 %s", ", ".join(crowded_1))
         if not _sleep_cancellable(step_delay, cancel_token=cancel_token):
             return ("導航已取消。", True)
     else:
-        print("  [NavigationAgent] >>> 初步規劃：各區人潮正常，採最短路徑", flush=True)
+        logger.info("NavigationAgent 初步規劃：各區人潮正常，採最短路徑")
         if not _sleep_cancellable(step_delay, cancel_token=cancel_token):
             return ("導航已取消。", True)
 
     # 階段 2：模擬移動中
-    print(
-        f"  [NavigationAgent] >>> 導航進行中...（等待 {en_route_sec:.0f} 秒）",
-        flush=True,
-    )
+    logger.info("NavigationAgent 導航進行中...（等待 %.0f 秒）", en_route_sec)
     if not _sleep_cancellable(en_route_sec, cancel_token=cancel_token):
         return ("導航已取消（行進中）。", True)
 
@@ -165,7 +157,7 @@ def _execute_with_replan(
 
     msg = f"已規劃從 {loc} 前往 {dest_label} 的路線，請跟我來。"
     if crowded_1 != crowded_2:
-        print("  [NavigationAgent] >>> 【路線變更】人潮已有變化！", flush=True)
+        logger.info("NavigationAgent 路線變更：人潮已有變化 %s -> %s", crowded_1, crowded_2)
         _report_crowd_reroute(adaptations, crowded_1, crowded_2)
         if crowded_1 and not crowded_2:
             msg += f" 【路線變更】原擁擠區 {', '.join(crowded_1)} 現已緩解，已改採最短路徑。"
@@ -219,12 +211,12 @@ def _execute(
         hotspots_1 = get_crowd_hotspots(agent)
         crowded_1 = sorted(_crowded_zones_from_hotspots(hotspots_1))
         if crowded_1:
-            print(f"  [NavigationAgent] >>> 初步規劃：避開 {', '.join(crowded_1)}", flush=True)
+            logger.info("NavigationAgent 初步規劃：避開 %s", ", ".join(crowded_1))
         else:
-            print("  [NavigationAgent] >>> 初步規劃：各區人潮正常", flush=True)
+            logger.info("NavigationAgent 初步規劃：各區人潮正常")
         if not _sleep_cancellable(0.8, cancel_token=cancel_token):
             return ("SuggestRoute 已取消。", True)
-        print("  [NavigationAgent] >>> 模擬規劃中...（5 秒）", flush=True)
+        logger.info("NavigationAgent 模擬規劃中...（5 秒）")
         if not _sleep_cancellable(5.0, cancel_token=cancel_token):
             return ("SuggestRoute 已取消（規劃中）。", True)
         ok = _simulate_progress(
@@ -246,7 +238,7 @@ def _execute(
         else:
             msg = f"已根據您的位置 {loc} 規劃建議參觀路線。"
         if crowded_1 != crowded_2:
-            print("  [NavigationAgent] >>> 【路線變更】人潮已有變化！", flush=True)
+            logger.info("NavigationAgent 路線變更：人潮已有變化 %s -> %s", crowded_1, crowded_2)
             _report_crowd_reroute(adaptations, crowded_1, crowded_2)
             if crowded_1 and not crowded_2:
                 msg += f" 【路線變更】原擁擠區 {', '.join(crowded_1)} 現已緩解，已改採最短路徑。"
@@ -350,11 +342,7 @@ class NavigationAgent(Agent):
         idempotency_key = payload.get("idempotency_key")
         interruptible = payload.get("interruptible", True)
 
-        print(
-            f"\n[NavigationAgent] 收到請求: task={task} task_id={task_id} params={params}",
-            flush=True,
-        )
-        logger.info("NavigationAgent received: task=%s task_id=%s", task, task_id)
+        logger.info("NavigationAgent received: task=%s task_id=%s params=%s", task, task_id, params)
 
         # 未綁定 task 的請求無法執行，必須回報失敗（不可落到預設分支回成功）
         if is_missing_task(task):
@@ -408,14 +396,13 @@ class NavigationAgent(Agent):
         elapsed = round(time.time() - t0, 3)
         ok = (error is None) and not cancelled
 
-        if not cancelled:
-            print(f"  [NavigationAgent] ✓ 完成: {message}", flush=True)
         logger.info(
-            "NavigationAgent result: task=%s ok=%s cancelled=%s elapsed=%.3fs",
+            "NavigationAgent result: task=%s ok=%s cancelled=%s elapsed=%.3fs message=%s",
             task,
             ok,
             cancelled,
             elapsed,
+            message,
         )
 
         result = build_result(

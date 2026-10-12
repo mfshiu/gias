@@ -268,13 +268,13 @@ class RecursivePlanner:
         }
 
         if depth >= max_depth:
-            print(f"{indent}[{scheduled_start}] 🔴 [NEW] {intent} (Type: leaf_forced_atomic)")
+            self.logger.info("%s[%s] [NEW] %s (Type: leaf_forced_atomic)", indent, scheduled_start, intent)
             current_node["type"] = "leaf_forced_atomic"
             current_node["is_atomic"] = True
             current_node["atomic_source"] = "new_generated"
             return current_node
 
-        print(f"{indent}{prefix}處理意圖: {intent}")
+        self.logger.info("%s%s處理意圖: %s", indent, prefix, intent)
 
         extra = {}
         if upstream:
@@ -332,8 +332,8 @@ class RecursivePlanner:
         action = sub.get("action", "")
         source = sub.get("atomic_source")
         sched_time = sub.get("scheduled_start", "")
-        marker = "🟢 [EXEC]" if source == "pre_defined" else "🔴 [NEW]"
-        print(f"{indent}    [{sched_time}] {marker} {child_intent} (Type: {source})")
+        marker = "[EXEC]" if source == "pre_defined" else "[NEW]"
+        self.logger.info("%s    [%s] %s %s (Type: %s)", indent, sched_time, marker, child_intent, source)
 
         action_name = _extract_action_name(action)
         agent_info = self._get_agent_by_action(action_name) if action_name else None

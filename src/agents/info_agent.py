@@ -62,11 +62,9 @@ def _simulate_progress(
     """
     for i, msg in enumerate(steps, 1):
         if cancel_token is not None and cancel_token.cancelled:
-            print(f"  [InfoAgent] (cancelled at step {i-1}/{len(steps)})", flush=True)
-            logger.info("InfoAgent progress cancelled: reason=%s", cancel_token.reason)
+            logger.info("InfoAgent cancelled at step %d/%d: reason=%s", i - 1, len(steps), cancel_token.reason)
             return False
-        print(f"  [InfoAgent] {i}/{len(steps)} {msg}", flush=True)
-        logger.info("InfoAgent progress: %s", msg)
+        logger.info("InfoAgent %d/%d %s", i, len(steps), msg)
         # 把延遲拆成小片段，方便快速回應 cancel
         slept = 0.0
         slice_dt = 0.05
@@ -252,11 +250,7 @@ class InfoAgent(Agent):
         idempotency_key = payload.get("idempotency_key")
         interruptible = payload.get("interruptible", True)
 
-        print(
-            f"\n[InfoAgent] 收到請求: task={task} task_id={task_id} params={params}",
-            flush=True,
-        )
-        logger.info("InfoAgent received: task=%s task_id=%s", task, task_id)
+        logger.info("InfoAgent received: task=%s task_id=%s params=%s", task, task_id, params)
 
         # 未綁定 task 的請求無法執行，必須回報失敗（不可落到預設分支回成功）
         if is_missing_task(task):
@@ -309,14 +303,13 @@ class InfoAgent(Agent):
         elapsed = round(time.time() - t0, 3)
         ok = (error is None) and not cancelled
 
-        if not cancelled:
-            print(f"  [InfoAgent] ✓ 完成: {message}", flush=True)
         logger.info(
-            "InfoAgent result: task=%s ok=%s cancelled=%s elapsed=%.3fs",
+            "InfoAgent result: task=%s ok=%s cancelled=%s elapsed=%.3fs message=%s",
             task,
             ok,
             cancelled,
             elapsed,
+            message,
         )
 
         result = build_result(

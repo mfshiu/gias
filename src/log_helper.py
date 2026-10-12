@@ -120,6 +120,10 @@ def get_log_level(level):
     return level
 
 
+# GIAS 自己的套件：模組以 logging.getLogger(__name__) 取得的 logger 也由 init_logging 統一設定
+APP_PACKAGES = ("src", "navigation_scenario")
+
+
 def init_logging(*, pytest_mode: bool | None = None) -> logging.Logger:
     import os
     import logging
@@ -166,6 +170,12 @@ def init_logging(*, pytest_mode: bool | None = None) -> logging.Logger:
         logger.handlers.clear()
         logger.propagate = True  # gias 也 propagate 到 root，統一由 root 輸出
         logger.setLevel(log_level)
+        # GIAS 套件的模組 logger 也交給 root（收集測試時以非 pytest 模式設定過的 handler 要清掉）
+        for name in APP_PACKAGES:
+            package_logger = logging.getLogger(name)
+            package_logger.handlers.clear()
+            package_logger.propagate = True
+            package_logger.setLevel(logging.NOTSET)
 
         root = logging.getLogger()
         root.setLevel(log_level)
@@ -193,9 +203,14 @@ def init_logging(*, pytest_mode: bool | None = None) -> logging.Logger:
     console_handler.setLevel(log_level)
     console_handler.setFormatter(console_formatter)
 
-    logger.handlers.clear()
-    logger.propagate = False
-    logger.addHandler(console_handler)
+    # app logger 與 GIAS 套件的模組 logger（logging.getLogger(__name__)，例如 src.kg.action_store）
+    # 用同一個 handler（含機密遮罩）與等級，LOG_LEVEL 才能統一控制
+    for name in (logger_name, *APP_PACKAGES):
+        target = logging.getLogger(name)
+        target.setLevel(log_level)
+        target.handlers.clear()
+        target.propagate = False
+        target.addHandler(console_handler)
 
     logger.info(f"Log name: {logger.name}, Level: {logger.level}, Output: stdout only")
     return logger

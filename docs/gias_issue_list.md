@@ -104,7 +104,7 @@
 | **S-04** | 安全 | 使用者輸入直接嵌入 prompt，沒有 prompt injection 防護 | [prompt_builder.py:12](../src/core/intent/prompt_builder.py#L12) | 已修正（b01fdf7） |
 | **E-02** | 工程品質 | 用 `_bak/*.7z` 備份取代 git 分支；commit 訊息有 ".."、"aaa" 這類不具描述性的寫法 | `_bak/` | 已修正（a873e97） |
 | **E-03** | 工程品質 | 有空殼或沒被使用的模組：`llm/cache`、`router`、`policy`、`observability`，`schemas/plan.py`、`eval.py`，`tasks/planning_tasks.py`、`evaluation_tasks.py`，`kg/client.py` | `src/llm/`、`src/kg/` | 已修正（379b75d） |
-| **E-04** | 工程品質 | `print` 和 logger 混用，log 層級無法統一控制 | `planner.py`、`src/agents/*` | 未處理 |
+| **E-04** | 工程品質 | `print` 和 logger 混用，log 層級無法統一控制 | `planner.py`、`src/agents/*` | 已修正 |
 | **E-05** | 工程品質 | OpenAI 聊天模型寫死成 `gpt-4.1-mini`，無法從 toml 設定 | [openai_provider.py:41](../src/llm/providers/openai_provider.py#L41) | 未處理 |
 | **E-06** | 工程品質 | 沒有 CI（`.github/` 是空的），548 個離線測試沒有自動執行 | `.github/` | 未處理 |
 
@@ -524,6 +524,16 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 - `llm/providers/mock_provider.py` 從 `..client` 匯入不存在的 `LLMUsage`，`[llm] provider = "mock"` 時匯入失敗；改從 `..types` 匯入
 
 刪除約 1,800 行（程式與測試），仍可從 git 取回。全部非 integration 測試（含 `tests/kg`）共 1079 個通過、10 個略過、0 個錯誤；`test_log_colors_visual` 1 個失敗為既有問題。
+
+### 2026-10-12：E-04
+
+| 項目 | 修正前 | 修正後 | 主要檔案 |
+|---|---|---|---|
+| 執行期的 print | InfoAgent、NavigationAgent 每個進度同時 print 一次、logger 再記一次；planner 以 print 輸出拆解過程 | 改為只用 logger（進度、收到請求、完成結果都在同一行 log 中）；planner 的拆解過程經它的 logger 輸出，emoji 標記改為 `[EXEC]` / `[NEW]`（避免 cp950 主控台編碼錯誤） | `info_agent.py`、`navigation_agent.py`、`planner.py` |
+| 等級控制 | `init_logging()` 只設定 `gias` logger；以 `logging.getLogger(__name__)` 取得的模組 logger（如 `src.kg.action_store`、`src.app_helper`、監測子系統的預設 logger）沒有 handler，INFO 以下被丟棄、警告以未格式化的方式輸出，不受 `LOG_LEVEL` 控制 | `src.*`、`navigation_scenario.*` 的模組 logger 與 `gias` 共用同一個 handler（含機密遮罩）與等級；pytest 模式交回 root，讓 caplog 收得到 | `src/log_helper.py` |
+| 慣例 | — | `CONTRIBUTING.md` 說明：執行期程式用 logger；`print` 只用在命令列的輸出（啟動腳本、seed、工具、BlackboardAgent 啟動摘要、單次模式給使用者的回覆） | `CONTRIBUTING.md` |
+
+新增測試 5 個（`tests/test_logging_config.py`），並以突變測試確認 4 個關鍵行為在還原後會被測試抓到。全部非 integration 測試共 1084 個通過、10 個略過；`test_log_colors_visual` 1 個失敗為既有問題。
 
 ---
 

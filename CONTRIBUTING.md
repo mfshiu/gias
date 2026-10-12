@@ -41,7 +41,19 @@ git config core.hooksPath .githooks
 
 ---
 
-## 3. 測試
+## 3. 日誌
+
+- 執行期的程式（代理、規劃、監測、黑板、KG 存取）用 logger，不用 `print`：模組可用 `init_logging()` 回傳的
+  `gias` logger，或 `logging.getLogger(__name__)`
+- `init_logging()` 讓 `gias` 與 `src.*`、`navigation_scenario.*` 的模組 logger 共用同一個輸出與等級，
+  以環境變數 `LOG_LEVEL`（`VERBOSE` / `DEBUG` / `INFO` / `WARNING` / `ERROR`，預設 `DEBUG`）統一控制；
+  輸出會遮罩 api_key、password 等欄位
+- `print` 只用在命令列的輸出：啟動腳本與工具（`src/run_*.py`、`navigation_scenario/*runner*.py`、seed、`src/tools/`）、
+  BlackboardAgent 的啟動摘要、單次模式最後給使用者的回覆
+
+---
+
+## 4. 測試
 
 ```bash
 python -m pytest tests -m "not integration" -o addopts=""

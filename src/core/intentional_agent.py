@@ -218,6 +218,7 @@ class IntentionalAgent(Agent):
                 logger.info("Intention %s finished: %s (%s)", item["intention_id"], item["status"], item["reason"])
                 reply = (item.get("result") or {}).get("response")
                 if reply:
+                    # 單次模式的輸出：給在主控台下指令的使用者看的回覆（不是 log）
                     print(f"\n[IntentionalAgent] {reply}\n", flush=True)
             self._terminate()
 
