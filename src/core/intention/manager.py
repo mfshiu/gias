@@ -52,6 +52,7 @@ def _result_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "message": summary.get("message"),
         "response": response.get("text") if isinstance(response, dict) else None,
         "state_counts": summary.get("state_counts"),
+        "simulated_steps": list(summary.get("simulated_steps") or []),
         "stopped": bool(summary.get("stopped")),
     }
 

@@ -114,6 +114,9 @@ IntentionalAgent 處理完一個意圖（完成、部分失敗或無法規劃）
 | `template` | 固定格式：`已完成「…」。`／`「…」未能全部完成。`，再逐行列出各步驟的結果或失敗原因；無法規劃時為 `抱歉，無法處理「…」：<原因>` |
 | `off` | 不產生回覆 |
 
+執行端回報為模擬（結果的 `simulated` 為 `true`，見 [`monitoring_protocol.md`](monitoring_protocol.md) §3）的步驟不當作實際完成：
+`template` 在該步驟後加「（模擬執行）」並附註說明，`llm` 要求 LLM 說明這些步驟只是模擬。
+
 ```toml
 [intent.response]
 mode = "llm"     # llm / template / off

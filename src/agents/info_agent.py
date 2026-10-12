@@ -217,6 +217,9 @@ def _execute(
 class InfoAgent(Agent):
     """提供資訊類 action。
 
+    內建的示範用執行端：任務以固定訊息模擬（部分 task 會讀 Blackboard 的人潮與攤位資料），
+    結果標 simulated=True（見 docs/monitoring_protocol.md §3）。
+
     支援兩種呼叫模式：
     - 舊：publish_sync(info.request, payload) → executor 回傳 dict（auto-reply）
     - 新：publish(info.request, payload_with_task_id) → executor 回 info.result
@@ -228,6 +231,10 @@ class InfoAgent(Agent):
         self._tasks: dict[str, CancelToken] = {}     # task_id -> CancelToken
         self._idempotency_cache: dict[str, dict[str, Any]] = {}
         self._tasks_lock = threading.Lock()
+
+    def is_simulated(self, task: str) -> bool:
+        """task 的結果是否為模擬（沒有實際執行，只回固定訊息）。內建的 task 都是；子類別提供實際行為時覆寫。"""
+        return True
 
     # ------------------------------------------------------------------
     # AgentFlow lifecycle
@@ -325,6 +332,7 @@ class InfoAgent(Agent):
             finished_at=finished_at,
             elapsed_sec=elapsed,
             result=outputs if ok and outputs else None,
+            simulated=self.is_simulated(task),
         )
 
         if idempotency_key and ok:

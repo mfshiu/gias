@@ -100,8 +100,10 @@ PENDING ──► PLANNING ──► EXECUTING ──► ACHIEVED
   "result": null
 }
 ```
-結束時 `result` 為 `{"ok", "message", "response", "state_counts", "stopped"}`；`response` 是給使用者的回覆
+結束時 `result` 為 `{"ok", "message", "response", "state_counts", "simulated_steps", "stopped"}`；`response` 是給使用者的回覆
 （彙整各步驟的結果，見 [`step_dataflow.md`](step_dataflow.md) §4），被搶占或取消而中止時為 null。
+`simulated_steps` 是執行端回報為模擬（沒有實際執行，見 [`monitoring_protocol.md`](monitoring_protocol.md) §3）的已完成步驟 id；
+`ok` 不因此改變。
 
 ---
 

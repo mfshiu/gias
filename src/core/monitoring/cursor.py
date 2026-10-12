@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from .events import NodeState, TERMINAL_STATES
+from .events import NodeState, TERMINAL_STATES, is_simulated_result
 
 
 def _is_atomic_node(node: dict[str, Any]) -> bool:
@@ -694,7 +694,10 @@ class PlanCursor:
     # Summary
     # ------------------------------------------------------------------
     def summary(self) -> dict[str, Any]:
-        """執行完成後產出 IA 對外回傳的 summary。"""
+        """執行完成後產出 IA 對外回傳的 summary。
+
+        simulated_steps：已完成、但執行端回報為模擬（沒有實際執行）的步驟 id；ok 的定義不受影響。
+        """
         records = sorted(self._records.values(), key=lambda r: (r.dispatched_at or 0))
         terminal_counts: dict[str, int] = {}
         for r in records:
@@ -702,11 +705,15 @@ class PlanCursor:
         # 「成功」定義：所有非 OBSOLETE/SKIPPED 的節點都是 DONE，且至少有一個 DONE
         non_dropped = [r for r in records if r.state not in (NodeState.OBSOLETE, NodeState.SKIPPED)]
         all_ok = bool(non_dropped) and all(r.state == NodeState.DONE for r in non_dropped)
+        simulated = [
+            r.node_id for r in non_dropped if r.state == NodeState.DONE and is_simulated_result(r.last_result)
+        ]
         return {
             "ok": all_ok,
             "plan": self._plan,
             "results": [self._record_result(r) for r in records],
             "state_counts": terminal_counts,
+            "simulated_steps": simulated,
             "replan_log": list(self._replan_log),
         }
 
@@ -721,6 +728,7 @@ class PlanCursor:
             "task_id": rec.task_id,
             "attempts": rec.attempts,
             "ok": rec.state == NodeState.DONE,
+            "simulated": is_simulated_result(rec.last_result),
             "result": rec.last_result,
             "error": rec.error,
             "adaptations": list(rec.adaptations),

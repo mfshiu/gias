@@ -88,7 +88,7 @@ from src.core.monitoring import (
     find_duplicate_node_ids,
 )
 from src.core.monitoring.trigger import TriggerConfig
-from src.core.monitoring.events import INPUT_UNAVAILABLE, PRECONDITION_FAILED
+from src.core.monitoring.events import INPUT_UNAVAILABLE, PRECONDITION_FAILED, is_simulated_result
 from src.blackboard.client import (
     subscribe_blackboard,
     subscriber_topic,
@@ -1007,6 +1007,9 @@ class IntentionalAgent(Agent):
             "message": "執行完成。" if all_ok else "部分執行失敗。",
             "plan": plan,
             "results": results,
+            "simulated_steps": [
+                str(r.get("id")) for r in results if r.get("ok") and is_simulated_result(r.get("result"))
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -1105,6 +1108,7 @@ class IntentionalAgent(Agent):
                         "message": ar.message,
                         "result": ar.result,
                         "task": ar.task,
+                        "simulated": ar.simulated,
                     })
                     if rec is not None:
                         fresh.append(ar)

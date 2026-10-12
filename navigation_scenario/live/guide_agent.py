@@ -14,6 +14,7 @@ GuideAgent：live 模式的嚮導機器人（navigation executor）。
 - 每一步記錄在 trajectory，供 benchmark 計算實際距離、到達的目標與限制違反
 - 繞行與放寬限制以 adaptations 回報 IntentionalAgent（navigation.progress 的 adapted 事件，
   並附在 navigation.result 的 result.adaptations）
+- 移動類 task 的結果不標 simulated；其餘 task 沿用 NavigationAgent 的模擬（simulated=True）
 """
 
 from __future__ import annotations
@@ -235,6 +236,10 @@ class GuideAgent(NavigationAgent):
     # ------------------------------------------------------------------
     # 任務執行
     # ------------------------------------------------------------------
+    def is_simulated(self, task: str) -> bool:
+        """移動類 task 在 Blackboard 圖上實際移動；其餘 task 沿用 NavigationAgent 的模擬。"""
+        return task not in MOVE_TASKS
+
     def execute_task(
         self,
         task: str,

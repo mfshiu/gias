@@ -93,7 +93,8 @@ Action KG 的 `topic` 寫 `<channel>.request`，或簡寫 `<channel>`（轉成�
   "error": null,
   "started_at": "2026-05-24T11:00:00Z",
   "finished_at": "2026-05-24T11:00:05Z",
-  "elapsed_sec": 5.0
+  "elapsed_sec": 5.0,
+  "simulated": false
 }
 ```
 
@@ -106,6 +107,7 @@ Action KG 的 `topic` 寫 `<channel>.request`，或簡寫 `<channel>`（轉成�
 | `result.<output>` | 否 | Action KG 宣告的輸出（例：`result.booths`），供後續步驟引用（見 [`step_dataflow.md`](step_dataflow.md)） |
 | `result.adaptations` | 否 | 執行中自行做的調整清單（格式同 §5 的 `adaptation`） |
 | `started_at`, `finished_at`, `elapsed_sec` | 否 | 計時 |
+| `simulated` | 否 | `true` 表示任務沒有實際執行、只回固定訊息（預設 `false`）。內建的 InfoAgent、NavigationAgent 是示範用執行端，一律為 `true`；GuideAgent 的移動類 task 實際在 Blackboard 圖上移動，為 `false`。IA 在執行摘要的 `simulated_steps` 列出這類已完成的步驟，意圖結果與最後回覆也會註明；`ok` 的意義不變 |
 
 ---
 

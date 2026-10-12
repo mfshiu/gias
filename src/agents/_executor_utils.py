@@ -155,16 +155,19 @@ def build_result(
     started_at: str | None = None,
     finished_at: str | None = None,
     elapsed_sec: float | None = None,
+    simulated: bool = False,
 ) -> dict[str, Any]:
     """組裝執行結果。
 
     向後相容：未指定 task_id 時，回傳結構與舊版相同（加上 ok 預設 True）。
+    simulated：任務沒有實際執行、只回固定訊息時為 True（例如內建的示範用執行端）；
+    IntentionalAgent 會在執行摘要的 simulated_steps 列出這些步驟，ok 的意義不變。
     """
     payload: dict[str, Any] = {
         "ok": ok,
         "task": task,
         "message": message,
-        "simulated": True,
+        "simulated": bool(simulated),
         "action_id": action_id,
         "intent": intent,
     }

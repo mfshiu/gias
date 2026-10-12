@@ -310,7 +310,10 @@ def _result_payload(outputs: dict[str, Any], adaptation_items: list[dict[str, An
 
 
 class NavigationAgent(Agent):
-    """實際帶領/導航類 action。
+    """帶領/導航類 action。
+
+    內建的示範用執行端：任務以固定訊息模擬（只讀 Blackboard 的人潮資料），結果標 simulated=True
+    （見 docs/monitoring_protocol.md §3）。navigation_scenario.live.GuideAgent 是在 Blackboard 圖上實際移動的子類別。
 
     支援兩種呼叫模式（與 InfoAgent 相同），詳見 docs/monitoring_protocol.md。
     """
@@ -320,6 +323,10 @@ class NavigationAgent(Agent):
         self._tasks: dict[str, CancelToken] = {}
         self._idempotency_cache: dict[str, dict[str, Any]] = {}
         self._tasks_lock = threading.Lock()
+
+    def is_simulated(self, task: str) -> bool:
+        """task 的結果是否為模擬（沒有實際執行，只回固定訊息）。內建的 task 都是；子類別提供實際行為時覆寫。"""
+        return True
 
     # ------------------------------------------------------------------
     # AgentFlow lifecycle
@@ -418,6 +425,7 @@ class NavigationAgent(Agent):
             finished_at=finished_at,
             elapsed_sec=elapsed,
             result=_result_payload(outputs if ok else {}, adaptations.items),
+            simulated=self.is_simulated(task),
         )
 
         if idempotency_key and ok:
@@ -441,7 +449,7 @@ class NavigationAgent(Agent):
 
         執行中自行做的調整（改路線、放寬限制）以 adaptations.report() 回報意圖層；
         task 的輸出（Action KG 的 Output，例如抵達後的位置）寫進 outputs，附在結果的 result 欄位。
-        子類別可覆寫以提供實際的導航行為（例：navigation_scenario.live.GuideAgent）。
+        子類別可覆寫以提供實際的導航行為（例：navigation_scenario.live.GuideAgent），並同時覆寫 is_simulated。
         """
         return _execute(self, task, params, cancel_token=cancel_token, adaptations=adaptations, outputs=outputs)
 

@@ -5,6 +5,9 @@
 - template：固定格式列出各步驟的結果
 - off：不產生回覆
 
+執行端回報為模擬（simulated）的步驟不當作實際完成：template 在該步驟後標「模擬執行」並附註，
+llm 要求說明這些步驟只是模擬。
+
 設定：[intent.response] mode。回覆放在執行摘要的 response（{"text", "source"}），
 並寫進意圖的 result.response。
 """
@@ -16,6 +19,7 @@ import logging
 from typing import Any
 
 from src.core.intent.dataflow import step_outputs
+from src.core.monitoring.events import is_simulated_result
 from src.llm.untrusted import MAX_DATA_CHARS, UNTRUSTED_RULE, wrap
 
 RESPONSE_MODES = ("llm", "template", "off")
@@ -46,6 +50,8 @@ def step_reports(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
             "state": state,
             "message": str(payload.get("message") or ""),
         }
+        if state == "done" and is_simulated_result(payload):
+            report["simulated"] = True
         outputs = step_outputs(payload)
         if outputs:
             report["outputs"] = outputs
@@ -67,9 +73,12 @@ def template_response(intent: str, *, ok: bool, steps: list[dict[str, Any]], rea
     for s in steps:
         label = s.get("intent") or s.get("task") or "步驟"
         if s.get("state") == "done":
-            lines.append(f"・{label}：{s.get('message') or '完成'}")
+            note = "（模擬執行）" if s.get("simulated") else ""
+            lines.append(f"・{label}：{s.get('message') or '完成'}{note}")
         else:
             lines.append(f"・{label}：未完成（{s.get('error') or s.get('state')}）")
+    if any(s.get("simulated") for s in steps):
+        lines.append("註：標示「模擬執行」的步驟由示範用的執行端回覆，並未實際完成。")
     return "\n".join(lines)
 
 
@@ -104,10 +113,17 @@ class ResponseComposer:
         facts = json.dumps(steps, ensure_ascii=False, default=str)
         if len(facts) > _MAX_STEPS_JSON_CHARS:
             facts = facts[:_MAX_STEPS_JSON_CHARS] + " ...(truncated)"
+        simulated = any(s.get("simulated") for s in steps)
         if reason is not None:
             outcome = f"could not be planned: {reason}"
         else:
             outcome = "completed" if ok else "not fully completed"
+            if simulated:
+                outcome += "; some steps were only simulated"
+        simulated_rule = (
+            '\n- Steps marked "simulated": true were not actually carried out: a demo executor returned '
+            "a canned message. Say so briefly instead of presenting them as done."
+        ) if simulated else ""
         prompt = f"""User request:
 {wrap("user_input", intent)}
 Outcome: {outcome}
@@ -118,7 +134,7 @@ Write the reply to the user.
 - Reply in the language of the user request.
 - Use only the information above; do not invent places, times or other facts.
 - Combine the results into one answer: what was found or done, and what the user should do next, if anything.
-- If some steps failed or the request could not be handled, say so briefly and suggest an alternative.
+- If some steps failed or the request could not be handled, say so briefly and suggest an alternative.{simulated_rule}
 - Plain text, at most 5 sentences. No markdown, no JSON."""
         try:
             resp = self.llm.chat(messages=[

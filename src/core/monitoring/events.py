@@ -20,6 +20,11 @@ INPUT_UNAVAILABLE = "input unavailable"
 NON_RETRYABLE_ERRORS = (PRECONDITION_FAILED, INPUT_UNAVAILABLE)
 
 
+def is_simulated_result(payload: Any) -> bool:
+    """執行端的結果是否為模擬：沒有實際執行，只回固定訊息（見 docs/monitoring_protocol.md §3）。"""
+    return isinstance(payload, dict) and payload.get("simulated") is True
+
+
 class NodeState(str, Enum):
     """atomic 節點的生命週期狀態。
 
@@ -185,6 +190,7 @@ class ActionResult:
     result: dict[str, Any] | None = None
     cancelled: bool = False
     error: str | None = None
+    simulated: bool = False     # 執行端沒有實際執行，只回固定訊息（見 is_simulated_result）
     received_at: float = field(default_factory=time.time)
 
     @classmethod
@@ -204,4 +210,5 @@ class ActionResult:
             result=result_obj,
             cancelled=bool(payload.get("cancelled", False)),
             error=payload.get("error"),
+            simulated=is_simulated_result(payload),
         )

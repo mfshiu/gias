@@ -76,7 +76,7 @@
 
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
-| **V-06** | 實驗驗證 | 執行端 Agent 都是模擬的：回傳 `"simulated": True` 和固定訊息 | [_executor_utils.py:158](../src/agents/_executor_utils.py#L158) | 「任務成功」不代表任務真的完成 | 未處理 |
+| **V-06** | 實驗驗證 | 執行端 Agent 都是模擬的：回傳 `"simulated": True` 和固定訊息 | [_executor_utils.py:158](../src/agents/_executor_utils.py#L158) | 「任務成功」不代表任務真的完成 | 已修正（標記改為逐個 task 聲明，並傳到意圖結果與回覆） |
 | **L-04** | 閉環／監測 | 動態調適發生在 NavigationAgent 內部（自己查兩次黑板），意圖層並不知道 | [navigation_agent.py:98](../src/agents/navigation_agent.py#L98) | 調適能力歸屬在執行端，不在 IPM，和架構敘述不一致 | 已修正（5cf062a） |
 | **C-05** | 正確性 | 有依賴循環時，相關節點會被當成孤兒放到第一層先執行，而且沒有警告 | [cursor.py:191](../src/core/monitoring/cursor.py#L191) | 違反執行順序 | 已修正（059947d） |
 | **C-06** | 正確性 | 比對器查不到時把門檻降為 0 重查，參數 gate 全部淘汰時也會關掉 gate 重試 | [action_matcher.py:243](../src/core/intent/action_matcher.py#L243)、[action_matcher.py:343](../src/core/intent/action_matcher.py#L343) | 比對器幾乎不會拒絕，「超出能力範圍」只能靠 ScopeGate 一次 LLM 判斷 | 已修正（059947d） |
@@ -616,6 +616,23 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 - 這些對照實驗只用於驗證各元件的貢獻，不影響框架本身的功能
 
 若之後需要對照組，較可行的做法是在 navigation_scenario 的 live 模式加上可切換的變體（例如關閉監測與重規劃、不用 Action KG 比對、只用 LLM 規劃），並在結果中標示變體名稱；屆時另開項目。「一般 RAG」與「拿掉 MAS」需要另外設計。
+
+### 2026-10-12：V-06
+
+依選擇，內建執行端維持示範用途，但「模擬」標記改為正確，並傳到意圖層：
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 執行端 | `build_result` 的 `simulated` 改為參數（預設 `false`），不再一律為 `true`。執行端以 `is_simulated(task)` 逐個 task 聲明：InfoAgent、NavigationAgent 的 task 都是模擬；GuideAgent 的移動類 task 實際在 Blackboard 圖上移動，不標模擬，其餘 task 沿用 NavigationAgent 的模擬；缺少 task 而拒絕的請求不標模擬 | `_executor_utils.py`、`info_agent.py`、`navigation_agent.py`、`navigation_scenario/live/guide_agent.py` |
+| 意圖層 | 監測迴圈原本在把結果轉成 `ActionResult` 時丟掉 `simulated`；現在保留並記在節點上。執行摘要（監測與同步兩條路徑）新增 `simulated_steps`：已完成、但執行端回報為模擬的步驟 id；每個步驟的結果也帶 `simulated`。意圖的 `result` 一併帶出 `simulated_steps`。`ok` 的定義不變 | `events.py`（`is_simulated_result`）、`cursor.py`、`intentional_agent.py`、`intention/manager.py` |
+| 最後回覆 | `template` 在模擬步驟後加「（模擬執行）」並附註「並未實際完成」；`llm` 的 prompt 標明哪些步驟只是模擬、要求說明，沒有模擬步驟時 prompt 不變 | `intention/response.py` |
+| 文件 | 結果 payload 的 `simulated` 欄位、意圖結果的 `simulated_steps`、回覆的模擬註記；`src/agents` 說明改為示範用執行端（原本寫「實際帶領/導航」） | `docs/monitoring_protocol.md` §3、`docs/intention_protocol.md`、`docs/step_dataflow.md` §4、`src/agents/__init__.py` |
+
+新增測試 14 個（`tests/test_simulated_results.py`），其中一個把 InfoAgent 與 GuideAgent 實際接上監測迴圈，確認標記一路傳到執行摘要、意圖結果與回覆（這個測試抓到了 `ActionResult` 丟掉標記的問題）；並以突變測試確認 16 個關鍵行為在還原後會被測試抓到。全部非 integration 測試共 1126 個通過、10 個略過、0 個失敗。
+
+**注意**：
+- `build_result` 的預設由 `simulated=true` 改為 `false`：依頻道慣例新增的執行端若只回固定訊息，需自行傳 `simulated=True`（或覆寫 `is_simulated`）
+- 內建執行端仍是示範用途；實際部署時依頻道慣例接上自己的執行端
 
 ---
 
