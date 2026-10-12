@@ -10,6 +10,24 @@
 
 動態事件：`crowd_congestion` / `area_closure` / `route_detour`，依 `--ratios` 機率注入到任務開始前與執行中段。
 
+## 驗證範圍：只驗證規劃（已由 navigation_scenario 取代）
+
+| 階段 | experiment1 的做法 | 經過 GIAS |
+|---|---|---|
+| 規劃 | `IntentionalAgent.plan_intention()`：LLM 拆解意圖並比對 Action KG | 是 |
+| 執行 | 在 Blackboard 快照上跑 Dijkstra；路徑依測試案例的 `goal_zones` 計算，不讀計畫內容 | 否（模擬） |
+| 重規劃 | 中途事件使路徑失效時再跑一次 Dijkstra；不經過 IntentionalAgent 的監測迴圈或重規劃 | 否（模擬） |
+
+因此只有 PE 反映 GIAS 產生的計畫；TSR、ISR、RSR、constraint_rate、路徑長度與時間量到的是模擬結果（PE 不通過的案例記為失敗）。`results/` 下的既有結果也是如此。新的結果 JSON 與 `summary.md` 以 `mode = planning_only` 標示這個範圍（定義於 `scope.py`）。
+
+執行與調適的端到端驗證改用 [navigation_scenario](../navigation_scenario/README.md) 的 live 模式。它同樣分單目標、限制式、多步驟三組，各 20 個案例，但地圖較大，且事件在任務進度 30%／60% 時注入（experiment1 的 30%／60% 是注入機率）。live 模式走完整流程：LLM 規劃 → 監測迴圈經 MQTT 派工 → `GuideAgent` 在 Blackboard 圖上移動 → 事件寫進 Blackboard 後由 IntentionalAgent 決定 retry／replan，指標依實際軌跡計算。
+
+```powershell
+python -X utf8 -m navigation_scenario.batch_runner --live
+```
+
+說明見 [`docs/navigation_scenario_runbook.md` § 8.6](../docs/navigation_scenario_runbook.md#86-live-模式以真實-gias-流程執行navigation_scenariolive)。experiment1 保留用於重現既有的規劃結果，不再擴充。
+
 ## 模組架構
 
 ```
@@ -19,7 +37,8 @@ experiment1/
   seed_actions.py    # 寫入 actions DB 的執行程式
   seed_blackboard.py # 寫入 blackboard DB 的 baseline 圖譜
   event_injector.py  # 動態事件注入（30%/60%）
-  runner.py          # 單一 case 執行核心（plan + 模擬導航 + replan）
+  runner.py          # 單一 case 執行核心（GIAS 規劃 + Dijkstra 模擬導航與重規劃）
+  scope.py           # 驗證範圍（mode = planning_only）與各指標的來源
   batch_runner.py    # 共用批次執行 + 結果寫檔
   metrics.py         # CaseResult / Aggregate（TSR/PE/ISR/RSR）
   run_single_goal.py # Group A 執行器
@@ -98,15 +117,15 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 
 ## 指標定義
 
-| 指標 | 定義 |
-|---|---|
-| **TSR**（Task Success Rate） | 模擬最終是否到達所有 goal zones |
-| **PE**（Plan Executability） | plan 不是 `leaf_unresolved`、含至少 1 個導航類 atomic action、且全在 allowed 集合內 |
-| **ISR**（Intention Stability Rate） | 多目標案例中，所有 goal zones 是否依**順序**到訪 |
-| **RSR**（Replanning Success Rate） | 中途事件導致 replan 觸發時，新路徑是否能達成剩餘目標。無 replan 時為 `N/A` |
-| `constraint_rate` | 受限案例中，避開擁擠/封閉的限制是否實際被滿足 |
-| `avg_path_m` | 平均路徑長度（公尺） |
-| `avg_time_s` | 平均完成時間（秒，含 replan 懲罰） |
+| 指標 | 定義 | 來源 |
+|---|---|---|
+| **TSR**（Task Success Rate） | 模擬最終是否到達所有 goal zones | Dijkstra 模擬（PE 不通過記為失敗） |
+| **PE**（Plan Executability） | plan 不是 `leaf_unresolved`、含至少 1 個導航類 atomic action、且全在 allowed 集合內 | GIAS 計畫 |
+| **ISR**（Intention Stability Rate） | 多目標案例中，所有 goal zones 是否依**順序**到訪 | Dijkstra 模擬 |
+| **RSR**（Replanning Success Rate） | 中途事件導致 replan 觸發時，新路徑是否能達成剩餘目標。無 replan 時為 `N/A` | Dijkstra 模擬 |
+| `constraint_rate` | 受限案例中，避開擁擠/封閉的限制是否實際被滿足 | Dijkstra 模擬 |
+| `avg_path_m` | 平均路徑長度（公尺） | Dijkstra 模擬 |
+| `avg_time_s` | 平均完成時間（秒，含 replan 懲罰） | Dijkstra 模擬 |
 
 ## 模擬規則摘要
 
@@ -122,6 +141,9 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 ```jsonc
 {
   "group": "single_goal",
+  "mode": "planning_only",            // 驗證範圍；2026-10 之前的結果檔沒有這三個欄位，範圍相同
+  "validation_scope": {"planning": "gias", "execution": "simulation", "replanning": "simulation"},
+  "superseded_by": {"scenario": "navigation_scenario", "mode": "live", "command": "python -X utf8 -m navigation_scenario.batch_runner --live"},
   "ratios": [0.3, 0.6],
   "n_cases": 20,
   "midway_inject": true,

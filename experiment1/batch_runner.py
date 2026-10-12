@@ -18,6 +18,7 @@ from src.kg.adapter_neo4j import Neo4jBoltAdapter
 from experiment1.runner import RunnerOptions, run_case
 from experiment1.test_cases import build_test_cases, filter_cases
 from experiment1.metrics import CaseResult
+from experiment1.scope import NOTICE_LINES, scope_payload
 
 
 DEFAULT_RESULTS_DIR = Path("experiment1/results")
@@ -93,6 +94,8 @@ def run_group(group: str, args: argparse.Namespace) -> int:
     print(f"  cases  : {len(cases)} 個")
     print(f"  ratios : {ratios}")
     print(f"  midway : {'OFF' if args.no_midway else 'ON'}")
+    for line in NOTICE_LINES:
+        print(f"  {line}")
 
     agent_config = get_agent_config()
     kg = _build_kg()
@@ -154,6 +157,7 @@ def run_group(group: str, args: argparse.Namespace) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "group": group,
+        **scope_payload(),
         "ratios": ratios,
         "n_cases": len(cases),
         "midway_inject": not args.no_midway,

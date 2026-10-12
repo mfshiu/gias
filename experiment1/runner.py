@@ -1,6 +1,10 @@
 """
 Experiment 1：單一 test case 執行核心
 
+驗證範圍：只有步驟 3 呼叫 GIAS。步驟 5、6 的導航與重規劃是 Dijkstra 模擬，
+路徑依 case.goal_zones 計算，不讀 plan 內容；plan 只決定 PE（見 experiment1/scope.py）。
+執行與調適的端到端驗證請用 navigation_scenario 的 live 模式。
+
 流程（一次 case）：
   1) reset Blackboard 為 baseline
   2) 依 ratio 注入「初始事件」(可能 0~N 個 zone/edge)
@@ -9,7 +13,7 @@ Experiment 1：單一 test case 執行核心
   5) 模擬導航：用 Dijkstra 在當下 blackboard 子圖上找路；
      若無路徑且 constraints 啟用，視為 fail
   6) 在執行中段(到一半時)再依 ratio 注入「中途事件」；若使路徑被封鎖
-     → 觸發 replan：再做一次 Dijkstra；若仍可達 → replan_success
+     → 觸發 replan：再做一次 Dijkstra（不呼叫 IntentionalAgent）；若仍可達 → replan_success
   7) 累積 metrics 並回傳 CaseResult
 """
 

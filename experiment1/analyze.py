@@ -6,6 +6,7 @@ results JSON，計算 (group, ratio) 桶聚合 → 產出：
   - 終端表格
   - <out_dir>/summary.csv
   - <out_dir>/summary.md
+三者都標示驗證範圍（只有規劃經過 GIAS，見 experiment1/scope.py）。
 
 執行：
     python -m experiment1.analyze
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Iterable
 
 from experiment1.metrics import CaseResult, aggregate
+from experiment1.scope import METRIC_SOURCES, MODE, NOTICE_LINES, SOURCE_LABELS
 
 
 DEFAULT_RESULTS_DIR = Path("experiment1/results")
@@ -87,6 +89,16 @@ HEADER = (
     "constraint_rate", "avg_path_m", "avg_time_s",
 )
 
+METRIC_NOTES = {
+    "TSR": "Task Success Rate",
+    "PE": "Plan Executability",
+    "ISR": "Intention Stability Rate",
+    "RSR": "Replanning Success Rate (N/A if no replan triggered)",
+    "constraint_rate": "受限案例中限制條件被滿足的比例",
+    "avg_path_m": "平均路徑長度（公尺）",
+    "avg_time_s": "平均完成時間（秒，含 replan 懲罰）",
+}
+
 
 def _render_terminal(rows: list[dict]) -> str:
     widths = [max(len(str(r.get(h, ""))) for r in rows + [{h: h for h in HEADER}]) for h in HEADER]
@@ -107,6 +119,15 @@ def _render_markdown(rows: list[dict]) -> str:
     for r in rows:
         out.append("| " + " | ".join(str(r.get(h, "")) for h in HEADER) + " |")
     return "\n".join(out)
+
+
+def _render_notes() -> str:
+    lines = []
+    for name in HEADER:
+        if name in METRIC_NOTES:
+            source = SOURCE_LABELS[METRIC_SOURCES[name]]
+            lines.append(f"- {name} : {METRIC_NOTES[name]}（來源：{source}）")
+    return "\n".join(lines)
 
 
 def _to_rows(results: Iterable[CaseResult]) -> list[dict]:
@@ -145,6 +166,9 @@ def main() -> int:
         return 1
 
     print(f"=== experiment1.analyze ===")
+    print(f"Mode: {MODE}")
+    for line in NOTICE_LINES:
+        print(f"  {line}")
     print("Sources:")
     for f in files:
         print(f"  - {f}")
@@ -175,15 +199,15 @@ def main() -> int:
 
     with md_path.open("w", encoding="utf-8") as f:
         f.write("# Experiment 1 Summary\n\n")
+        f.write(f"**Mode**：`{MODE}`\n\n")
+        f.write("".join(f"- {line}\n" for line in NOTICE_LINES))
+        f.write("\n")
         f.write(f"Sources: {len(files)} file(s), {len(results)} case(s) in total.\n\n")
         f.write("## Aggregated Metrics by (group, ratio)\n\n")
         f.write(_render_markdown(rows))
         f.write("\n\n## Notes\n\n")
-        f.write("- TSR  : Task Success Rate\n")
-        f.write("- PE   : Plan Executability\n")
-        f.write("- ISR  : Intention Stability Rate\n")
-        f.write("- RSR  : Replanning Success Rate (N/A if no replan triggered)\n")
-        f.write("- constraint_rate : 受限案例中限制條件被滿足的比例\n")
+        f.write(_render_notes())
+        f.write("\n")
 
     print(f"\n寫入：")
     print(f"  - {csv_path}")

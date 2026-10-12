@@ -16,6 +16,8 @@ Experiment 1 metrics
           當任務執行中發生中斷事件 (擁擠/封閉/繞路) 而觸發 replan 時，
           replan 是否成功(找到新可達路徑)
           RSR = #replan_success / #replan_triggered  (no replan triggered → N/A)
+
+只有 PE 由 GIAS 產生的計畫決定；其餘指標由 Dijkstra 模擬決定（見 experiment1/scope.py）。
 """
 
 from __future__ import annotations

@@ -59,7 +59,7 @@
 
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
-| **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 未處理 |
+| **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 已修正（標示為只驗證規劃，由 navigation_scenario live 模式取代） |
 | **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 未處理 |
 | **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 未處理 |
 | **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（3b4495c） |
@@ -567,6 +567,26 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 - CI 在 push 到 GitHub 後才會執行；本機 `main` 目前比 `origin/main` 多 50 個以上的 commit，尚未 push
 - 未在 Linux 上實際執行過；第一次 CI 執行會驗證 Ubuntu 與 Windows 兩個環境
 - AgentFlow 固定在 GitHub 上的 commit；S-02 的 TLS 修改在 AgentFlow 端 commit 並 push 後，需更新 `requirements.txt` 中的 commit
+
+### 2026-10-12：V-03
+
+依選擇，不改寫 experiment1 的執行方式，而是明確標示它只驗證規劃，並把執行與調適的端到端驗證交給 navigation_scenario 的 live 模式。
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 範圍定義 | `mode = planning_only`：規劃經過 GIAS，執行與重規劃是 Dijkstra 模擬；列出各指標的來源（只有 PE 由 GIAS 產生的計畫決定）與取代者 | `experiment1/scope.py`（新） |
+| 結果 JSON | 新的結果檔加上 `mode`、`validation_scope`、`superseded_by`；執行時先印出範圍說明 | `experiment1/batch_runner.py` |
+| Summary | 終端機與 `summary.md` 標示 Mode 與範圍說明，Notes 逐項註明指標來源；CSV 欄位不變。已重新產生 `results/summary.md`（數字不變） | `experiment1/analyze.py`、`experiment1/results/summary.md` |
+| 文件 | README 新增「驗證範圍」一節：各階段的做法、哪些指標是模擬、既有結果同樣適用、與 navigation_scenario 的對應與差異。指標表加上來源欄，runner 與 metrics 的說明同步更新 | `experiment1/README.md`、`runner.py`、`metrics.py` |
+
+檢查時發現：模擬的路徑依測試案例的 `goal_zones` 計算，完全不讀計畫內容，所以計畫只影響 PE（PE 不通過的案例記為失敗）。TSR、ISR、RSR、constraint_rate、路徑長度與時間都是模擬結果。
+
+新增測試 8 個（`tests/experiment1/test_experiment1_scope.py`），並以突變測試確認 8 個關鍵行為在還原後會被測試抓到。全部非 integration 測試共 1101 個通過、10 個略過、0 個失敗。
+
+**注意**：
+- experiment1 的程式與既有結果都保留；既有的結果 JSON 沒有改寫（沒有 mode 欄位，範圍相同）
+- 取代者 navigation_scenario 的 live 模式（V-01）尚未在真實服務上執行（OpenAI 金鑰目前回 401），執行與調適的實測數據要等它跑過才有
+- experiment1 的 30%／60% 是事件注入機率，navigation_scenario 的 30%／60% 是注入時的任務進度，兩者的數字不能直接比較
 
 ---
 
