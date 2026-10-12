@@ -59,7 +59,7 @@
 
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
-| **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 已修正（標示為只驗證規劃，由 navigation_scenario live 模式取代） |
+| **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 已修正（1d7d19e；標示為只驗證規劃，由 navigation_scenario live 模式取代） |
 | **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 未處理 |
 | **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 未處理 |
 | **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（3b4495c） |
@@ -568,7 +568,7 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 - 未在 Linux 上實際執行過；第一次 CI 執行會驗證 Ubuntu 與 Windows 兩個環境
 - AgentFlow 固定在 GitHub 上的 commit；S-02 的 TLS 修改在 AgentFlow 端 commit 並 push 後，需更新 `requirements.txt` 中的 commit
 
-### 2026-10-12：V-03
+### 2026-10-12：V-03（commit 1d7d19e）
 
 依選擇，不改寫 experiment1 的執行方式，而是明確標示它只驗證規劃，並把執行與調適的端到端驗證交給 navigation_scenario 的 live 模式。
 
