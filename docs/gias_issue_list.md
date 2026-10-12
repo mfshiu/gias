@@ -60,7 +60,7 @@
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
 | **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 已修正（1d7d19e；標示為只驗證規劃，由 navigation_scenario live 模式取代） |
-| **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 未處理 |
+| **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 已修正（標示為獨立的出題管線，沒有經過 IntentionalAgent） |
 | **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 未處理 |
 | **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（3b4495c） |
 | **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（3b4495c） |
@@ -587,6 +587,27 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 - experiment1 的程式與既有結果都保留；既有的結果 JSON 沒有改寫（沒有 mode 欄位，範圍相同）
 - 取代者 navigation_scenario 的 live 模式（V-01）尚未在真實服務上執行（OpenAI 金鑰目前回 401），執行與調適的實測數據要等它跑過才有
 - experiment1 的 30%／60% 是事件注入機率，navigation_scenario 的 30%／60% 是注入時的任務進度，兩者的數字不能直接比較
+
+### 2026-10-12：V-04
+
+依選擇，不改 GenExam 的執行方式，而是明確標示它是獨立的出題管線：只用到 GIAS 的 LLMClient 與 Blackboard KG，規劃、執行與修正都是 runner 的固定流程，沒有經過 IntentionalAgent 的規劃與監測。
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 範圍定義 | `scope = standalone_pipeline`，各階段都是 `fixed_pipeline`；列出用到與沒用到的 GIAS 元件，以及各指標實際量到的內容 | `genexam_scenario/scope.py`（新） |
+| 結果 JSON | 每案結果 JSON 與 `_manifest.json` 加上 `scope`、`validation_scope`、`gias_components`；manifest 原有的 `mode`（dry-run／live，指是否呼叫 LLM）不變。單案例與批次執行時先印出範圍說明 | `runner.py`、`batch_runner.py` |
+| 報告 | `report.md` 在主表前標示範圍，主表後列出各指標實際量到的內容；終端輸出也印出範圍說明 | `analyze.py` |
+| 文件 | README 新增「驗證範圍」一節（用到與沒用到的 GIAS 元件、指標的解讀）。開頭原本寫會在生成中途注入約束，實際上限制在生成前固定，已修正；Action KG 一節註明 runner 沒有使用這些 action。套件與測試案例的說明同步更新 | `README.md`、`__init__.py`、`test_cases.py` |
+
+檢查時發現：
+- `seed_actions` 寫入的 11 個 GVR action（含 UpdateIntention）和 Blackboard 上的 GVR Agent 節點，目前都沒有程式使用
+- CSR 與 SC 只計算通過驗證的題目，並沿用驗證時的同一套規則，所以只要有題目通過，SC 就是 100%；未使用 `--llm-judge` 時 CSR 也是 100%（比對的是 LLM 自己標示的難度／Bloom／題型），Task Success 實際上等於題數是否達標。報告中 CSR、SC 的 100% 是計算方式決定的，不能當作題目實際符合限制的證據。本次只標示，沒有改計算方式
+
+新增測試 11 個（`tests/genexam_scenario/test_genexam_scope.py`），其中一個確認上述 CSR／SC 的前提，計算方式改變時會提醒更新標示；並以突變測試確認 10 個關鍵行為在還原後會被測試抓到。全部非 integration 測試共 1112 個通過、10 個略過、0 個失敗。
+
+**注意**：
+- `genexam_scenario_results/` 不在版本控制內；本機既有的結果與報告沒有重新產生，重跑 `python -m genexam_scenario.analyze <run_dir>` 即可加上標示
+- GenExam 沒有像 navigation_scenario 那樣的 live 模式，GIAS 在試題生成這個領域仍沒有端到端驗證
 
 ---
 

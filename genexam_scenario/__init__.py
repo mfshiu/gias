@@ -1,17 +1,15 @@
 """
 GenExam Scenario：試題生成（評估二）測試套件
 
-驗證 GIAS 在「限制驅動」的試題生成任務下，是否能透過 GVR
-（Generator → Verifier → Refiner）閉環，
-維持 Intention 穩定、實現 Knowledge Grounding、並協作完成生成。
+以 GVR（Generator → Verifier → Refiner）閉環執行「限制驅動」的試題生成，
+評估限制條件的滿足與 Knowledge Grounding。
 
-測試類型（共 60 案）：
-  - single_constraint  : 單一動態約束（30 例，難度 OR 題型）
-  - multi_constraint   : 多重動態約束（30 例，難度 + Bloom + 題型）
+測試類型（共 60 案，限制條件在生成前固定，不做中途注入）：
+  - single_constraint  : 單一約束（30 例，難度 OR 題型）
+  - multi_constraint   : 多重約束（30 例，難度 + Bloom + 題型）
 
-在生成進度 Initial（起始）或 Mid-generation（中段）時，
-注入新增 / 變更 / 收緊 / 鬆綁的約束條件，
-觀察是否能正確 Refine 並維持原 Intention。
+驗證範圍：runner 是獨立的出題管線，只用到 GIAS 的 LLMClient 與 Blackboard KG，
+沒有經過 IntentionalAgent 的規劃與監測（見 scope.py）。
 
 模組結構：
   config.py          # Topic / Subtopic / Concept / Fact / Source 與常數
@@ -20,7 +18,8 @@ GenExam Scenario：試題生成（評估二）測試套件
                      # 含「領域知識子圖（KG-RAG 來源）」與「生成狀態子圖（GVR 工作空間）」
   test_cases.py      # 60 個固定限制的測試案例（30 single + 30 multi）
   metrics.py         # 5 項指標：KC / CSR / SC / Task Success Rate / Gen Time
-  runner.py          # 單案例執行器（GVR 閉環，真實 LLM）
+  runner.py          # 單案例執行器（GVR 閉環，真實 LLM；不經過 IntentionalAgent）
+  scope.py           # 驗證範圍（scope = standalone_pipeline）與各指標實際量到的內容
   batch_runner.py    # 批次執行 60 案例 → genexam_scenario_results/run_<ts>/
   analyze.py         # 彙整 CSV + Markdown 報告
 

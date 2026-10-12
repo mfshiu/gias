@@ -32,6 +32,7 @@ from genexam_scenario.runner import (
     build_llm,
     run_case,
 )
+from genexam_scenario.scope import NOTICE_LINES, scope_payload
 from genexam_scenario.test_cases import (
     GenExamTestCase,
     all_cases,
@@ -90,6 +91,8 @@ def run_batch(
     print(f"  模式        : {'dry-run (mock)' if dry_run else 'live (LLM)'}")
     print(f"  LLM-judge   : {use_llm_judge}")
     print(f"  max_refine  : {max_refine}")
+    for line in NOTICE_LINES:
+        print(f"  {line}")
     print()
 
     kg = build_blackboard_kg()
@@ -155,6 +158,7 @@ def run_batch(
     # 寫總結 manifest
     manifest = {
         "run_dir": str(run_dir),
+        **scope_payload(),
         "n_cases": len(cases),
         "n_success": successes,
         "n_fail": len(cases) - successes,

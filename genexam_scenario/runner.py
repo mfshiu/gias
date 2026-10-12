@@ -20,6 +20,9 @@ CLI：
     python -m genexam_scenario.runner multi_07 --dry-run    # 不呼叫 LLM，用 mock 題
 
 注意：本 runner 預期 actions / blackboard database 已 seed。
+
+驗證範圍：這是獨立的出題管線，只用到 GIAS 的 LLMClient 與 Blackboard KG，沒有經過
+IntentionalAgent 的規劃與監測；seed 的 GVR action 目前沒有被使用（見 genexam_scenario/scope.py）。
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from src.llm.client import LLMClient
 from src.log_helper import init_logging
 
 from genexam_scenario.config import BLOOM_LEVELS, BLOOM_RUBRIC, DIFFICULTY_RUBRIC
+from genexam_scenario.scope import NOTICE_LINES, scope_payload
 from genexam_scenario.metrics import (
     CaseMetrics,
     GeneratedQuestion,
@@ -125,6 +129,7 @@ class CaseResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            **scope_payload(),
             "case": self.case.to_dict(),
             "metrics": self.metrics.to_dict(),
             "log": self.log.to_dict(),
@@ -983,6 +988,8 @@ def main(argv: list[str] | None = None) -> int:
         f"  llm_judge={args.llm_judge}"
         f"  max_refine={args.max_refine}"
     )
+    for line in NOTICE_LINES:
+        print(f"  {line}")
 
     kg = build_blackboard_kg()
     llm = None if args.dry_run else build_llm()

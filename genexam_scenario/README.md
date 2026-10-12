@@ -1,8 +1,27 @@
 # GenExam Scenario：試題生成（評估二）測試套件
 
-驗證 GIAS 在「**限制驅動的試題生成**」任務下，是否能透過 GVR
-（Generator → Verifier → Refiner）閉環，於動態約束注入時仍維持原 Intention，
-並確實做到 Knowledge Grounding（不幻覺、引用 KG 內容）。
+以 GVR（Generator → Verifier → Refiner）閉環執行「**限制驅動的試題生成**」，評估限制條件的滿足與
+Knowledge Grounding（不幻覺、引用 KG 內容）。限制條件在生成前固定，不做動態注入。
+
+## 驗證範圍：獨立的出題管線，沒有經過 IntentionalAgent
+
+`runner.py` 依固定順序執行各階段，只用到 GIAS 的兩個元件：
+
+| GIAS 元件 | 是否使用 | 說明 |
+|---|---|---|
+| `LLMClient` | 是 | runner 直接呼叫 LLM 生成、修正（以及選用的 LLM judge） |
+| Blackboard KG | 是 | 檢索 Concept／Fact，寫回 GenerationSession 與題目 |
+| IntentionalAgent 規劃與 Action KG 比對 | 否 | 階段順序寫死在 runner；`seed_actions` 寫入的 11 個 GVR action 目前沒有程式使用 |
+| 監測迴圈（retry／replan） | 否 | 驗證不通過時由 runner 的迴圈改寫，最多 `--max-refine` 次 |
+| MQTT 執行端 Agent | 否 | 沒有 agent 接單；Blackboard 上的 GVR Agent 節點只是資料 |
+
+因此結果反映的是這條管線與 LLM 的表現，不能歸功於 GIAS 的意圖規劃與調適。新的結果 JSON、`_manifest.json` 與
+`report.md` 以 `scope = standalone_pipeline` 標示這個範圍（定義於 `scope.py`）；manifest 原有的 `mode`
+（`dry-run`／`live`）指的是是否呼叫 LLM。`genexam_scenario_results/` 下既有的結果沒有這個欄位，範圍相同。
+
+解讀指標時也要注意：CSR 與 SC 只計算通過驗證的題目，並沿用驗證時的同一套規則，所以只要有題目通過，SC 就是 100%；
+未使用 `--llm-judge` 時 CSR 也是 100%（驗證比對的是 LLM 自己標示的難度／Bloom／題型），Task Success 實際上等於
+題數是否達標。
 
 ## 測試規劃（共 60 案，限制於生成前固定，不做動態注入）
 
@@ -29,7 +48,8 @@ genexam_scenario/
   seed_blackboard.py # 寫入 Blackboard KG（[kg.neo4j_blackboard] = 'blackboard' database）
   test_cases.py      # 60 個固定限制的測試案例（30 single + 30 multi）
   metrics.py         # 5 項指標：KC / CSR / SC / Task Success Rate / Gen Time
-  runner.py          # 單案例執行器（GVR 閉環，真實 LLM 呼叫）
+  runner.py          # 單案例執行器（GVR 閉環，真實 LLM 呼叫；不經過 IntentionalAgent）
+  scope.py           # 驗證範圍（scope = standalone_pipeline）與各指標實際量到的內容
   batch_runner.py    # 批次執行 60 案例 → genexam_scenario_results/run_<ts>/
   analyze.py         # 彙整 CSV + Markdown 報告（投影片風格表格）
   README.md
@@ -183,6 +203,8 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 | **Task Success Rate** | — | 案例級成功率：題數達標 AND CSR ≥ 1.0 AND SC ≥ 1.0 |
 | **Gen Time** | — | 單案例從請求到 Finalize 的 wall-clock 秒數 |
 
+CSR、SC 與 Task Success 只看通過驗證的題目，解讀方式見上方「驗證範圍」；`report.md` 主表下方也會列出各指標實際量到的內容。
+
 跨案彙整輸出 `single_constraint` / `multi_constraint` / `overall` 三組數值，
 可直接對應投影片的 SIMULATED RESULTS 表格。
 
@@ -245,7 +267,7 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 | **Refiner** | `RefineQuestion` | 依 Verifier 回報問題改寫題目（保留 Intention） |
 
 每個 Action 都帶 `description_embedding`（OpenAI `text-embedding-3-small`），
-並建立向量索引 `action_desc_vec`，供 IntentionalAgent 做語意路由。
+並建立向量索引 `action_desc_vec`，供 IntentionalAgent 做語意路由。目前 runner 沒有使用這些 action（見「驗證範圍」）。
 
 ## Blackboard KG 內容（baseline）
 

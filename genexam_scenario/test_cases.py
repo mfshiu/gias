@@ -7,7 +7,8 @@ GenExam Scenario 測試案例定義（60 案例，全於生成前固定限制條
 
 注意：本評估**不**做生成中途的動態事件注入；
       所有限制條件在 GenerationSession 建立時即固定，
-      用以單純評估 GIAS（GVR + KG-RAG + IPM）的「可控生成」與「知識一致性」能力。
+      用以單純評估這條出題管線（GVR + KG-RAG）的「可控生成」與「知識一致性」能力；
+      它沒有經過 IntentionalAgent（見 scope.py）。
 """
 
 from __future__ import annotations

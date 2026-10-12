@@ -8,6 +8,7 @@ GenExam Scenario：彙整單次批次的結果為 CSV / Markdown 報告
   - by_topic.csv      ：依 topic 拆分
   - by_focus.csv      ：依 constraint_focus 拆分
   - report.md         ：與簡報相同格式的表格報告
+report.md 與終端輸出都標示驗證範圍（獨立的出題管線，見 genexam_scenario/scope.py）。
 
 執行：
     python -m genexam_scenario.analyze <run_dir>
@@ -27,6 +28,7 @@ from genexam_scenario.metrics import (
     aggregate_metrics,
     format_results_table,
 )
+from genexam_scenario.scope import METRIC_NOTES, NOTICE_LINES, SCOPE
 
 
 # =============================================================================
@@ -336,6 +338,10 @@ def _write_markdown(
     md_lines.append(f"**模式**：{mode}　**LLM-judge**：{llm_judge}　**總耗時**：{elapsed} 秒")
     md_lines.append(f"**Total cases**：{agg['overall']['n_cases']}")
     md_lines.append("")
+    md_lines.append(f"**驗證範圍**：`{SCOPE}`")
+    md_lines.append("")
+    md_lines.extend(f"- {line}" for line in NOTICE_LINES)
+    md_lines.append("")
     md_lines.append("---")
     md_lines.append("")
 
@@ -345,6 +351,10 @@ def _write_markdown(
     md_lines.append("> 對應投影片 SIMULATED RESULTS 表格")
     md_lines.append("")
     md_lines.append(_md_main_table(agg))
+    md_lines.append("")
+    md_lines.append("各指標實際量到的內容：")
+    md_lines.append("")
+    md_lines.extend(f"- **{name}**：{note}" for name, note in METRIC_NOTES.items())
     md_lines.append("")
 
     # 依 topic
@@ -424,6 +434,8 @@ def analyze_run(run_dir: Path) -> dict[str, Path]:
     print(f"  {report_md}")
     print()
     print(format_results_table(agg))
+    for line in NOTICE_LINES:
+        print(line)
     print()
 
     return {
