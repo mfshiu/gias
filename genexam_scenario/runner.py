@@ -12,12 +12,15 @@ GenExam Scenario：單一案例執行器（GVR 閉環，真實 LLM 呼叫）
        c. （選用）LLM-judge：獨立評估 difficulty / bloom / question_type
   5. Refine     ：對未通過的題目呼叫 LLM 改寫，最多 N 次（N 預設 2）
   6. Finalize   ：把通過的題目寫回 Blackboard，session 標 Finalized
-  7. Evaluate   ：呼叫 metrics.evaluate_case() 算 KC / CSR / SC / Success / GenTime
+  7. Evaluate   ：CSR 另以 LLM 評審判定每個題位最後一次的題目（--llm-judge 時沿用驗證的 judge；
+                  dry-run 或 --no-eval-judge 時為 N/A），再呼叫 metrics.evaluate_case() 算
+                  KC / CSR / SC / Success / GenTime（Gen Time 不含評審）
 
 CLI：
     python -m genexam_scenario.runner <case_id>
     python -m genexam_scenario.runner single_diff_02 --llm-judge --max-refine 2
     python -m genexam_scenario.runner multi_07 --dry-run    # 不呼叫 LLM，用 mock 題
+    python -m genexam_scenario.runner single_diff_02 --no-eval-judge   # 不另外評審 CSR（N/A）
 
 注意：本 runner 預期 actions / blackboard database 已 seed。
 
@@ -44,9 +47,13 @@ from src.log_helper import init_logging
 from genexam_scenario.config import BLOOM_LEVELS, BLOOM_RUBRIC, DIFFICULTY_RUBRIC
 from genexam_scenario.scope import NOTICE_LINES, scope_payload
 from genexam_scenario.metrics import (
+    CSR_SOURCE_EVAL_JUDGE,
+    CSR_SOURCE_UNAVAILABLE,
+    CSR_SOURCE_VERIFIER_JUDGE,
     CaseMetrics,
     GeneratedQuestion,
     evaluate_case,
+    format_rate,
 )
 from genexam_scenario.test_cases import (
     BLOOM_LABELS_ZH,
@@ -815,6 +822,73 @@ def _mock_question(
 
 
 # =============================================================================
+# Phase 7：Evaluate — CSR 的評審判定（與生成、驗證分開）
+# =============================================================================
+def judge_labels(obj: Any) -> dict[str, Any] | None:
+    """評審回覆 → {"difficulty", "bloom_level", "question_type"}；沒有任何判定時為 None。"""
+    if not isinstance(obj, dict):
+        return None
+    diff = obj.get("difficulty")
+    qtype = obj.get("question_type")
+    try:
+        bloom = int(obj["bloom_level"]) if obj.get("bloom_level") is not None else None
+    except (TypeError, ValueError):
+        bloom = None
+    labels = {
+        "difficulty": str(diff).strip().lower() if diff else None,
+        "bloom_level": bloom,
+        "question_type": str(qtype).strip().lower() if qtype else None,
+    }
+    return labels if any(v is not None for v in labels.values()) else None
+
+
+def final_attempts(log: GenerationLog) -> list[QuestionAttempt]:
+    """每個題位最後採用的那次嘗試：通過驗證的那次，否則最後一次。"""
+    return [
+        next((a for a in attempts if a.accepted), attempts[-1])
+        for attempts in log.per_question_attempts
+        if attempts
+    ]
+
+
+def judge_for_csr(
+    llm: LLMClient | None,
+    attempts: list[QuestionAttempt],
+    *,
+    use_llm_judge: bool,
+    eval_judge: bool = True,
+) -> tuple[list[dict[str, Any] | None] | None, str]:
+    """CSR 用的判定：回傳 (labels, csr_source)；labels 為 None 表示無法評審（CSR 為 N/A）。
+
+    - 使用 --llm-judge：驗證時已由 judge 判定每一次嘗試，沿用（同一個 judge，不是獨立判斷）
+    - 否則另外呼叫 LLM 評審，不比對 LLM 自己標示的值；單題評審失敗時該題記為未判定（不符合）
+    - 沒有 LLM（dry-run）或停用評審：無法評審
+    """
+    if llm is None:
+        return None, CSR_SOURCE_UNAVAILABLE
+    if use_llm_judge:
+        labels = [
+            judge_labels({
+                "difficulty": a.judge_difficulty,
+                "bloom_level": a.judge_bloom,
+                "question_type": a.judge_qtype,
+            })
+            for a in attempts
+        ]
+        return labels, CSR_SOURCE_VERIFIER_JUDGE
+    if not eval_judge:
+        return None, CSR_SOURCE_UNAVAILABLE
+    labels: list[dict[str, Any] | None] = []
+    for a in attempts:
+        try:
+            labels.append(judge_labels(llm_judge(llm, a.raw)))
+        except Exception as e:
+            logger.warning("CSR judge failed for question %s: %s", a.raw.get("question_id"), e)
+            labels.append(None)
+    return labels, CSR_SOURCE_EVAL_JUDGE
+
+
+# =============================================================================
 # 核心：run_case
 # =============================================================================
 def run_case(
@@ -827,12 +901,14 @@ def run_case(
     dry_run: bool = False,
     verbose: bool = True,
     seed: int | None = None,
+    eval_judge: bool = True,
 ) -> CaseResult:
     if seed is not None:
         random.seed(seed)
 
     log = GenerationLog(case_id=case.case_id, session_id="")
     log.started_at = time.monotonic()
+    topic_concepts: set[str] = set()
 
     try:
         # 1) Plan
@@ -931,18 +1007,26 @@ def run_case(
     log.finished_at = time.monotonic()
     elapsed = log.finished_at - log.started_at
 
-    # 7) Evaluate：把通過 verifier 的題目轉成 GeneratedQuestion 餵給 metrics
+    # 7) Evaluate：KC 與題數看通過驗證的題目；CSR、SC 看每個題位最後一次的題目（分母為要求的題數），
+    #    CSR 的判定來自評審，不比對 LLM 自己標示的值（Gen Time 已在上面結算，不含評審）
+    finals = final_attempts(log)
+    labels, csr_source = judge_for_csr(
+        None if dry_run else llm, finals, use_llm_judge=use_llm_judge, eval_judge=eval_judge,
+    )
     accepted_questions = [_to_generated_question(r) for r in log.accepted_questions]
     metrics = evaluate_case(
         case,
         accepted_questions,
+        final_questions=[_to_generated_question(a.raw) for a in finals],
+        judged_labels=labels,
+        csr_source=csr_source,
         topic_concept_ids=topic_concepts,
         gen_time_sec=elapsed,
     )
 
     if verbose:
         print(
-            f"  [eval] KC={metrics.kc:.2f} CSR={metrics.csr:.2f} "
+            f"  [eval] KC={metrics.kc:.2f} CSR={format_rate(metrics.csr)} ({metrics.csr_source}) "
             f"SC={metrics.sc:.2f} success={metrics.task_success} "
             f"elapsed={elapsed:.2f}s refines={log.refine_total}"
         )
@@ -968,6 +1052,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="把結果輸出為 JSON 檔（不指定則僅印到 stdout）")
     p.add_argument("--seed", type=int, default=None,
                    help="random seed（影響 mock 與 knowledge 抽樣）")
+    p.add_argument("--no-eval-judge", action="store_true",
+                   help="不另外呼叫 LLM 評審 CSR（CSR 記為 N/A；使用 --llm-judge 時沿用驗證的 judge）")
     args = p.parse_args(argv)
 
     case = case_by_id(args.case_id)
@@ -987,6 +1073,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{'dry-run (mock)' if args.dry_run else 'live (LLM)'}"
         f"  llm_judge={args.llm_judge}"
         f"  max_refine={args.max_refine}"
+        f"  eval_judge={not args.no_eval_judge}"
     )
     for line in NOTICE_LINES:
         print(f"  {line}")
@@ -1003,6 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             verbose=True,
             seed=args.seed,
+            eval_judge=not args.no_eval_judge,
         )
     finally:
         try:
@@ -1016,7 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
         f"  category = {result.case.category}"
     )
     print(
-        f"  KC={result.metrics.kc:.3f}  CSR={result.metrics.csr:.3f}  "
+        f"  KC={result.metrics.kc:.3f}  CSR={format_rate(result.metrics.csr, digits=3)}  "
         f"SC={result.metrics.sc:.3f}  success={result.metrics.task_success}  "
         f"gen_time={result.metrics.gen_time_sec:.2f}s  "
         f"refines={result.log.refine_total}"

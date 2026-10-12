@@ -19,13 +19,16 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 from genexam_scenario.metrics import (
+    CSR_SOURCE_LABELS,
+    CSR_SOURCE_LEGACY,
     CaseMetrics,
     aggregate_metrics,
+    format_rate,
     format_results_table,
 )
 from genexam_scenario.scope import METRIC_NOTES, NOTICE_LINES, SCOPE
@@ -52,12 +55,14 @@ def _load_case_metrics(run_dir: Path) -> list[CaseMetrics]:
                     requested_count=int(m["requested_count"]),
                     questions_generated=int(m["questions_generated"]),
                     kc=float(m["kc"]),
-                    csr=float(m["csr"]),
+                    csr=None if m["csr"] is None else float(m["csr"]),
                     sc=float(m["sc"]),
                     task_success=bool(m["task_success"]),
                     gen_time_sec=float(m["gen_time_sec"]),
                     constraints_required=m.get("constraints_required") or {},
                     per_question=m.get("per_question") or [],
+                    # 舊版結果檔沒有 csr_source：當時只看通過驗證的題目並比對自我標示
+                    csr_source=m.get("csr_source") or CSR_SOURCE_LEGACY,
                 )
             )
         except Exception as e:
@@ -108,7 +113,7 @@ def _write_per_case_csv(
         "difficulty", "bloom_level", "question_type",
         "requested_count", "questions_generated",
         "KC", "CSR", "SC", "task_success",
-        "gen_time_sec", "constraints_required",
+        "gen_time_sec", "constraints_required", "csr_source",
     ]
     with open(out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -122,9 +127,9 @@ def _write_per_case_csv(
                 meta.get("bloom_level") if meta.get("bloom_level") is not None else "",
                 meta.get("question_type", ""),
                 c.requested_count, c.questions_generated,
-                f"{c.kc:.4f}", f"{c.csr:.4f}", f"{c.sc:.4f}",
+                f"{c.kc:.4f}", format_rate(c.csr, digits=4), f"{c.sc:.4f}",
                 int(c.task_success), f"{c.gen_time_sec:.2f}",
-                _required_str(c),
+                _required_str(c), c.csr_source,
             ])
 
 
@@ -140,7 +145,7 @@ def _write_aggregate_csv(agg: dict[str, Any], out: Path) -> None:
             a = agg[bucket]
             w.writerow([
                 bucket, a["n_cases"],
-                f"{a['kc']:.4f}", f"{a['csr']:.4f}", f"{a['sc']:.4f}",
+                f"{a['kc']:.4f}", format_rate(a["csr"], digits=4), f"{a['sc']:.4f}",
                 f"{a['task_success_rate']:.4f}",
                 f"{a['avg_gen_time_sec']:.4f}",
             ])
@@ -164,7 +169,7 @@ def _write_by_topic_csv(
             agg = aggregate_metrics(sub)["overall"]
             w.writerow([
                 topic, agg["n_cases"],
-                f"{agg['kc']:.4f}", f"{agg['csr']:.4f}", f"{agg['sc']:.4f}",
+                f"{agg['kc']:.4f}", format_rate(agg["csr"], digits=4), f"{agg['sc']:.4f}",
                 f"{agg['task_success_rate']:.4f}",
                 f"{agg['avg_gen_time_sec']:.4f}",
             ])
@@ -196,7 +201,7 @@ def _write_by_focus_csv(
             agg = aggregate_metrics(sub)["overall"]
             w.writerow([
                 focus, agg["n_cases"],
-                f"{agg['kc']:.4f}", f"{agg['csr']:.4f}", f"{agg['sc']:.4f}",
+                f"{agg['kc']:.4f}", format_rate(agg["csr"], digits=4), f"{agg['sc']:.4f}",
                 f"{agg['task_success_rate']:.4f}",
                 f"{agg['avg_gen_time_sec']:.4f}",
             ])
@@ -211,8 +216,8 @@ def _md_main_table(agg: dict[str, Any]) -> str:
     m = agg["multi_constraint"]
     o = agg["overall"]
 
-    def pct(x: float) -> str:
-        return f"**{x*100:.1f}%**"
+    def pct(x: float | None) -> str:
+        return f"**{format_rate(x, pct=True, digits=1)}**"
 
     def sec(x: float) -> str:
         return f"**{x:.2f}s**"
@@ -245,7 +250,7 @@ def _md_by_topic(cases: list[CaseMetrics]) -> str:
         a = aggregate_metrics(grouped[topic])["overall"]
         rows.append(
             f"| `{topic}` | {a['n_cases']} | "
-            f"{a['kc']*100:.1f}% | {a['csr']*100:.1f}% | {a['sc']*100:.1f}% | "
+            f"{a['kc']*100:.1f}% | {format_rate(a['csr'], pct=True, digits=1)} | {a['sc']*100:.1f}% | "
             f"{a['task_success_rate']*100:.1f}% | {a['avg_gen_time_sec']:.2f}s |"
         )
     return "\n".join(rows)
@@ -273,7 +278,7 @@ def _md_by_focus(
         a = aggregate_metrics(grouped[focus])["overall"]
         rows.append(
             f"| `{focus}` | {a['n_cases']} | "
-            f"{a['kc']*100:.1f}% | {a['csr']*100:.1f}% | {a['sc']*100:.1f}% | "
+            f"{a['kc']*100:.1f}% | {format_rate(a['csr'], pct=True, digits=1)} | {a['sc']*100:.1f}% | "
             f"{a['task_success_rate']*100:.1f}% | {a['avg_gen_time_sec']:.2f}s |"
         )
     return "\n".join(rows)
@@ -297,7 +302,7 @@ def _md_failures(cases: list[CaseMetrics], full: list[dict[str, Any]]) -> str:
         fatal = log.get("fatal_error") or ""
         lines.append(
             f"| `{c.case_id}` | {c.category} | {c.topic} | "
-            f"{c.kc*100:.0f}% | {c.csr*100:.0f}% | {c.sc*100:.0f}% | "
+            f"{c.kc*100:.0f}% | {format_rate(c.csr, pct=True, digits=0)} | {c.sc*100:.0f}% | "
             f"{c.questions_generated}/{c.requested_count} | {fatal[:60]} |"
         )
     return "\n".join(lines)
@@ -341,6 +346,11 @@ def _write_markdown(
     md_lines.append(f"**驗證範圍**：`{SCOPE}`")
     md_lines.append("")
     md_lines.extend(f"- {line}" for line in NOTICE_LINES)
+    md_lines.append("")
+    md_lines.append("**CSR 判定來源**：" + "；".join(
+        f"{CSR_SOURCE_LABELS.get(src, src)} {n} 案"
+        for src, n in sorted(Counter(c.csr_source for c in cases).items())
+    ))
     md_lines.append("")
     md_lines.append("---")
     md_lines.append("")

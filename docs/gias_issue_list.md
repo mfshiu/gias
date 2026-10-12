@@ -62,7 +62,7 @@
 | **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 已修正（1d7d19e；標示為只驗證規劃，由 navigation_scenario live 模式取代） |
 | **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 已修正（ccbcdbd；標示為獨立的出題管線，沒有經過 IntentionalAgent） |
 | **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 不處理（repo 中沒有消融實驗的程式；對照實驗只用於驗證，不影響框架本身） |
-| **V-07** | 實驗驗證 | GenExam 的 CSR、SC 只計算通過驗證的題目，且沿用驗證時的同一套規則（`_check_constraints`、`_is_schema_consistent`）；未使用 `--llm-judge` 時，限制比對的是 LLM 自己標示的難度／Bloom／題型 | [runner.py:935](../genexam_scenario/runner.py#L935)、[metrics.py:253](../genexam_scenario/metrics.py#L253) | 只要有題目通過，SC 必為 100%，CSR 也是（使用 `--llm-judge` 時例外），Task Success 等於題數是否達標；報告中的 100% 不能當作題目實際符合限制的證據（V-04 已在報告中標示） | 未處理 |
+| **V-07** | 實驗驗證 | GenExam 的 CSR、SC 只計算通過驗證的題目，且沿用驗證時的同一套規則（`_check_constraints`、`_is_schema_consistent`）；未使用 `--llm-judge` 時，限制比對的是 LLM 自己標示的難度／Bloom／題型 | [runner.py:935](../genexam_scenario/runner.py#L935)、[metrics.py:253](../genexam_scenario/metrics.py#L253) | 只要有題目通過，SC 必為 100%，CSR 也是（使用 `--llm-judge` 時例外），Task Success 等於題數是否達標；報告中的 100% 不能當作題目實際符合限制的證據（V-04 已在報告中標示） | 已修正（分母改為要求題數，CSR 由獨立的 LLM 評審判定） |
 | **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（3b4495c） |
 | **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（3b4495c） |
 | **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（8b0cbce） |
@@ -634,6 +634,27 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 **注意**：
 - `build_result` 的預設由 `simulated=true` 改為 `false`：依頻道慣例新增的執行端若只回固定訊息，需自行傳 `simulated=True`（或覆寫 `is_simulated`）
 - 內建執行端仍是示範用途；實際部署時依頻道慣例接上自己的執行端
+
+### 2026-10-13：V-07
+
+依選擇，CSR、SC 改以要求的題數為分母，CSR 改由獨立的 LLM 評審判定：
+
+| 項目 | 內容 | 主要檔案 |
+|---|---|---|
+| 分母與範圍 | CSR、SC 以要求的題數為分母；每個題位取最後一次的題目（通過驗證的那次，否則最後一次），未通過驗證、未產出的題位都算不符合。KC 與題數仍看通過驗證的題目 | `genexam_scenario/metrics.py` |
+| CSR 判定 | 生成結束後另外呼叫 LLM 評審，判定每題的難度／Bloom／題型，不再比對 LLM 自己標示的值；評審回覆的大小寫、空白與 Bloom 的字串會先正規化，單題評審失敗算不符合。`--llm-judge` 時沿用驗證時的 judge，不另外呼叫，並標明不是獨立判斷。dry-run 或新的 `--no-eval-judge` 時 CSR 為 N/A，Task Success 不檢查 CSR。判定來源記在 `csr_source`（`eval_judge`／`verifier_judge`／`unavailable`） | `runner.py`、`metrics.py`、`batch_runner.py` |
+| Gen Time | 評審在生成結束、Gen Time 結算之後才執行，不計入 | `runner.py` |
+| 報告 | CSV 與報告處理 N/A（彙整時略過 N/A 的案例）；`summary.csv` 新增 `csr_source` 欄；`report.md` 列出各判定來源的案例數；舊版結果檔沒有 `csr_source`，標為 `legacy` 並說明舊算法必為 100%；manifest 記錄 `eval_judge` | `analyze.py`、`batch_runner.py` |
+| 說明 | 範圍說明、各指標實際量到的內容與 README 改寫為新的計算方式（包含 `csr_source` 對照表；README 的報告範例註明是舊算法的數字） | `scope.py`、`README.md` |
+
+順帶修正：`run_case` 在檢索之前失敗（例如連不上 Neo4j）時，原本計算指標會因 `topic_concepts` 未定義而拋出 NameError；現在照常回報失敗。
+
+新增測試 21 個（`tests/genexam_scenario/test_genexam_metrics.py`），以替身取代 Neo4j 與 LLM 實際執行 `run_case`，涵蓋評審與自我標示不一致、`--llm-judge` 沿用、N/A、評審失敗、中途失敗與舊版結果檔；V-04 鎖住舊算法前提的測試已移除。並以突變測試確認 20 個關鍵行為在還原後會被測試抓到。全部非 integration 測試共 1146 個通過、10 個略過、0 個失敗。
+
+**注意**：
+- 預設每題多一次 LLM 呼叫（60 案約 300 次）；不需要 CSR 時可加 `--no-eval-judge`
+- 評審與生成使用同一個 LLM 設定；要更獨立的判斷，需另外設定評審用的模型（目前沒有這個設定）
+- 尚未在真實 LLM 上跑過（OpenAI 金鑰目前回 401）；`genexam_scenario_results/` 下的既有結果仍是舊算法，重跑 analyze 會標為 `legacy`
 
 ---
 

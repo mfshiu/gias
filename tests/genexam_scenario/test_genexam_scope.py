@@ -40,9 +40,8 @@ def _case_result(case_id="single_diff_02"):
     case = case_by_id(case_id)
     raw = _accepted_raw(case)
     log = runner.GenerationLog(case_id=case.case_id, session_id="s1", accepted_questions=[raw])
-    metrics = evaluate_case(
-        case, [runner._to_generated_question(raw)], topic_concept_ids={"c_pm25"}, gen_time_sec=1.0,
-    )
+    q = runner._to_generated_question(raw)
+    metrics = evaluate_case(case, [q], final_questions=[q], topic_concept_ids={"c_pm25"}, gen_time_sec=1.0)
     return runner.CaseResult(case=case, metrics=metrics, log=log)
 
 
@@ -149,20 +148,7 @@ def test_runner_cli_prints_scope(tmp_path, monkeypatch, capsys):
     assert json.loads(out_json.read_text(encoding="utf-8"))["scope"] == SCOPE
 
 
-def test_csr_and_sc_reuse_the_verifier_rules():
-    """標示的前提：通過驗證的題目在指標中必定 CSR = SC = 1；驗證不通過的題目不進指標。
-
-    若改成連同未通過的題目一起計算，這個測試會失敗，請一併更新 scope.py 與 README 的說明。
-    """
-    case = case_by_id("single_diff_02")
-    raw = _accepted_raw(case)
-    m = evaluate_case(case, [runner._to_generated_question(raw)], topic_concept_ids={"c_pm25"}, gen_time_sec=0.0)
-    assert m.csr == 1.0 and m.sc == 1.0
-
-    # 自己標示的難度不符時，驗證就擋下，不會進到 CSR
-    wrong = {**raw, "difficulty": "hard" if case.difficulty != "hard" else "easy"}
-    att = runner.verify_question(wrong, case, topic_concepts={"c_pm25"}, all_fact_ids={"f_who"})
-    assert not att.accepted and att.csr_issues
+# CSR／SC 的計算方式（V-07）見 test_genexam_metrics.py
 
 
 @pytest.mark.parametrize("phrase", ["沒有經過 IntentionalAgent", "standalone_pipeline", "--llm-judge", "scope.py"])

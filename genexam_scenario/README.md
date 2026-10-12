@@ -19,9 +19,16 @@ Knowledge Grounding（不幻覺、引用 KG 內容）。限制條件在生成前
 `report.md` 以 `scope = standalone_pipeline` 標示這個範圍（定義於 `scope.py`）；manifest 原有的 `mode`
 （`dry-run`／`live`）指的是是否呼叫 LLM。`genexam_scenario_results/` 下既有的結果沒有這個欄位，範圍相同。
 
-解讀指標時也要注意：CSR 與 SC 只計算通過驗證的題目，並沿用驗證時的同一套規則，所以只要有題目通過，SC 就是 100%；
-未使用 `--llm-judge` 時 CSR 也是 100%（驗證比對的是 LLM 自己標示的難度／Bloom／題型），Task Success 實際上等於
-題數是否達標。
+CSR 與 SC 以要求的題數為分母，每個題位取最後一次的題目（未通過驗證、未產出都算不符合）。CSR 由生成結束後另外呼叫的
+LLM 評審判定難度／Bloom／題型，不比對 LLM 自己標示的值；每題多一次 LLM 呼叫，不計入 Gen Time。判定來源記在
+`csr_source`，`report.md` 會列出各來源的案例數：
+
+| `csr_source` | 何時 | 說明 |
+|---|---|---|
+| `eval_judge` | 預設 | 生成結束後另外呼叫的 LLM 評審 |
+| `verifier_judge` | `--llm-judge` | 沿用驗證時的 judge 判定，不另外呼叫；不是獨立判斷 |
+| `unavailable` | `--dry-run`、`--no-eval-judge` | 無法評審，CSR 為 N/A；Task Success 不檢查 CSR |
+| `legacy` | 2026-10-13 之前的結果檔 | 舊算法只看通過驗證的題目、比對 LLM 自己標示的值，CSR、SC 必為 100% |
 
 ## 測試規劃（共 60 案，限制於生成前固定，不做動態注入）
 
@@ -67,7 +74,7 @@ genexam_scenario/
 | **Verify** | 本地 schema 一致性 + 知識依據存在性 + 限制條件對比；可選 LLM-judge 獨立評估 difficulty/bloom/qtype |
 | **Refine** | 對未通過的題目呼叫 LLM 改寫（預設最多 2 次） |
 | **Finalize** | 寫入 `Question` + `Choice` + `GROUNDED_ON` + 分類學連線，將 session 標為 Finalized |
-| **Evaluate** | 呼叫 `metrics.evaluate_case()` 算 5 項指標並回傳 `CaseResult` |
+| **Evaluate** | LLM 評審判定每個題位最後一次的題目（CSR 用，見「驗證範圍」），再呼叫 `metrics.evaluate_case()` 算 5 項指標並回傳 `CaseResult` |
 
 ### 指令
 
@@ -86,6 +93,9 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 # 改變 refine 次數上限（預設 2）
 & $py -X utf8 -m genexam_scenario.runner multi_07 --max-refine 3
 
+# 不另外呼叫 LLM 評審 CSR（CSR 記為 N/A）
+& $py -X utf8 -m genexam_scenario.runner single_diff_02 --no-eval-judge
+
 # 輸出 JSON
 & $py -X utf8 -m genexam_scenario.runner single_diff_02 --out result.json
 ```
@@ -101,7 +111,7 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
   [retrieve] 12 concepts / 13 facts
   [q1/5] attempt=1 [OK] sc_issues=0 csr_issues=0 ground_issues=0
   ...
-  [eval] KC=0.42 CSR=1.00 SC=1.00 success=True elapsed=21.24s refines=0
+  [eval] KC=0.42 CSR=0.80 (eval_judge) SC=1.00 success=False elapsed=21.24s refines=0
 ```
 
 ## 批次執行 `batch_runner.py`
@@ -152,6 +162,7 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 |---|---|---|
 | `--dry-run` | off | 不呼叫 LLM，用 mock 題 |
 | `--llm-judge` | off | Verifier 啟用獨立 LLM 判定 |
+| `--no-eval-judge` | off | 不另外呼叫 LLM 評審 CSR（CSR 為 N/A；`--llm-judge` 時沿用驗證的 judge） |
 | `--max-refine N` | 2 | 每題最多 refine 次數 |
 | `--pause SEC` | 0.3 | 案例間暫停秒數 |
 | `--output DIR` | 自動 | 自訂輸出目錄 |
@@ -173,7 +184,7 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 
 | 檔案 | 內容 |
 |---|---|
-| `summary.csv` | 每案一列：case_id / category / topic / constraint_focus / difficulty / bloom_level / question_type / KC / CSR / SC / task_success / gen_time_sec / constraints_required |
+| `summary.csv` | 每案一列：case_id / category / topic / constraint_focus / difficulty / bloom_level / question_type / KC / CSR / SC / task_success / gen_time_sec / constraints_required / csr_source（CSR 無法評審時為 `N/A`） |
 | `aggregate.csv` | 依 category 彙整：single / multi / overall 三列 × 5 指標 |
 | `by_topic.csv` | 依主題拆分 |
 | `by_focus.csv` | 依 constraint_focus 拆分 |
@@ -181,7 +192,7 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 
 ### 報告主表（對應投影片 SIMULATED RESULTS）
 
-`report.md` 的第一張表格是與你提供的投影片完全對應的格式：
+`report.md` 的第一張表格是與你提供的投影片完全對應的格式（下例是舊算法的數字，CSR、SC 必為 100%，只示範格式）：
 
 ```
 | Metric                              | Single-Constraint | Multi-Constraint | Overall |
@@ -198,12 +209,12 @@ $py = "C:\Users\mfshi\miniconda3\envs\gias\python.exe"
 | 指標 | 全稱 | 定義 |
 |---|---|---|
 | **KC** | Knowledge Coverage | 該 topic 被引用過的 distinct Concept 數 ÷ 該 topic 在 KG 中的全部 Concept 數 |
-| **CSR** | Constraint Satisfaction Rate | 同時滿足所有指定限制（difficulty / bloom / question_type）的題目比例 |
-| **SC** | Semantic Consistency | 題目通過 schema 一致性檢核（題幹 / 選項 / 答案 / 題型對應）的比例 |
-| **Task Success Rate** | — | 案例級成功率：題數達標 AND CSR ≥ 1.0 AND SC ≥ 1.0 |
-| **Gen Time** | — | 單案例從請求到 Finalize 的 wall-clock 秒數 |
+| **CSR** | Constraint Satisfaction Rate | 評審判定同時滿足所有指定限制（difficulty / bloom / question_type）的題位 ÷ 要求的題數；每個題位取最後一次的題目 |
+| **SC** | Semantic Consistency | 通過 schema 一致性檢核（題幹 / 選項 / 答案 / 題型對應）的題位 ÷ 要求的題數；每個題位取最後一次的題目 |
+| **Task Success Rate** | — | 案例級成功率：通過驗證的題數達標 AND CSR ≥ 1.0（N/A 時不檢查） AND SC ≥ 1.0 |
+| **Gen Time** | — | 單案例從請求到 Finalize 的 wall-clock 秒數（不含 CSR 評審） |
 
-CSR、SC 與 Task Success 只看通過驗證的題目，解讀方式見上方「驗證範圍」；`report.md` 主表下方也會列出各指標實際量到的內容。
+CSR 的判定來源見上方「驗證範圍」；`report.md` 會列出各來源的案例數，主表下方也會列出各指標實際量到的內容。
 
 跨案彙整輸出 `single_constraint` / `multi_constraint` / `overall` 三組數值，
 可直接對應投影片的 SIMULATED RESULTS 表格。

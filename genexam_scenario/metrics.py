@@ -9,10 +9,11 @@ GenExam Scenario 評估指標
   5) Gen Time                           生成時間（秒）
 
 設計重點：
-  - 指標只看「**runner 寫到 Blackboard 的 Question / Choice / Answer / GROUNDED_ON 節點**」
-    與 case 的限制條件即可計算，不需要外部評審。
+  - KC、SC 只看題目本身與 case 的限制條件即可計算；CSR 需要評審判定（由 runner 提供，見下）。
   - 對於語意一致性的「深層」語意核對（題幹 ↔ 答案 ↔ 知識依據）可選擇外掛 LLM-judge；
     此模組僅實作「**結構一致性**」（schema-level），其餘留下 hook 由 runner 注入。
+  - CSR、SC 以要求的題數為分母，每個題位取最後一次的題目（通過驗證的那次，否則最後一次）；
+    未通過驗證、未產出的題位都算不符合。只看通過驗證的題目會讓 CSR、SC 必為 100%（V-07）。
 
 公式：
 
@@ -20,26 +21,28 @@ GenExam Scenario 評估指標
           ─────────────────────────────────────────────────────────────
           |{該 topic 在 Blackboard 中的所有 Concept ids}|
 
-    CSR = |{滿足所有指定限制 (difficulty / bloom / question_type) 的問題}|
-          ──────────────────────────────────────────────────────────────
-          |{generated 問題總數}|
+    CSR = |{評審判定符合所有指定限制 (difficulty / bloom / question_type) 的題位}|
+          ──────────────────────────────────────────────────────────────────
+          |{要求的題數}|
+          判定來自評審（csr_source）：生成結束後另外呼叫的 LLM 評審，不比對 LLM 自己標示的值；
+          使用 --llm-judge 時沿用驗證時的 judge（不是獨立判斷）；無法評審時（dry-run）CSR 為 None（N/A）
 
-    SC  = |{schema 一致的問題（依題型檢核）}|
+    SC  = |{schema 一致的題位（依題型檢核）}|
           ───────────────────────────────────
-          |{generated 問題總數}|
+          |{要求的題數}|
 
-    Task Success = 1  if  questions_generated ≥ count
-                       AND  csr ≥ csr_threshold（預設 1.0）
+    Task Success = 1  if  通過驗證的題數 ≥ count
+                       AND  csr ≥ csr_threshold（預設 1.0；CSR 為 N/A 時不檢查）
                        AND  sc  ≥ sc_threshold （預設 1.0）
                  = 0  otherwise
 
-    Gen Time     = wall-clock seconds from request acceptance to finalize
+    Gen Time     = wall-clock seconds from request acceptance to finalize（不含 CSR 評審）
 """
 
 from __future__ import annotations
 
 import statistics
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
 from typing import Any, Iterable
 
 from genexam_scenario.test_cases import GenExamTestCase
@@ -50,6 +53,26 @@ from genexam_scenario.test_cases import GenExamTestCase
 # =============================================================================
 DEFAULT_CSR_THRESHOLD = 1.0    # 預設要求所有題目都符合限制
 DEFAULT_SC_THRESHOLD = 1.0     # 預設要求所有題目 schema 一致
+
+# CSR 的判定來源
+CSR_SOURCE_EVAL_JUDGE = "eval_judge"            # 生成結束後另外呼叫的 LLM 評審
+CSR_SOURCE_VERIFIER_JUDGE = "verifier_judge"    # --llm-judge：沿用驗證時的 judge，不是獨立判斷
+CSR_SOURCE_UNAVAILABLE = "unavailable"          # dry-run 或停用評審：CSR 為 N/A
+CSR_SOURCE_LEGACY = "legacy"                    # 舊版結果檔：只看通過驗證的題目並比對自我標示，必為 100%
+
+CSR_SOURCE_LABELS = {
+    CSR_SOURCE_EVAL_JUDGE: "LLM 評審（與生成、驗證分開）",
+    CSR_SOURCE_VERIFIER_JUDGE: "沿用驗證的 judge（不是獨立判斷）",
+    CSR_SOURCE_UNAVAILABLE: "無法評審（N/A）",
+    CSR_SOURCE_LEGACY: "舊版計算（只看通過驗證的題目、比對自我標示，必為 100%）",
+}
+
+
+def format_rate(x: float | None, *, pct: bool = False, digits: int = 2) -> str:
+    """比例的文字；None（無法評估）為 N/A。"""
+    if x is None:
+        return "N/A"
+    return f"{x * 100:.{digits}f}%" if pct else f"{x:.{digits}f}"
 
 
 # =============================================================================
@@ -78,12 +101,13 @@ class CaseMetrics:
     requested_count: int
     questions_generated: int
     kc: float
-    csr: float
+    csr: float | None                         # None：無法評審（N/A）
     sc: float
     task_success: bool
     gen_time_sec: float
     constraints_required: dict[str, Any]
     per_question: list[dict[str, Any]] = field(default_factory=list)
+    csr_source: str = CSR_SOURCE_UNAVAILABLE
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -139,24 +163,51 @@ def _check_constraints(
     return (len(issues) == 0, issues)
 
 
+def judged_question(q: GeneratedQuestion, labels: dict[str, Any]) -> GeneratedQuestion:
+    """以評審判定的難度／Bloom／題型取代題目自己標示的值。"""
+    return replace(
+        q,
+        difficulty=labels.get("difficulty"),
+        bloom_level=labels.get("bloom_level"),
+        question_type=labels.get("question_type"),
+    )
+
+
+def _denominator(questions: list[GeneratedQuestion], requested_count: int | None) -> int:
+    return max(len(questions), requested_count if requested_count is not None else len(questions))
+
+
 def compute_csr(
     questions: list[GeneratedQuestion],
     required: dict[str, Any],
-) -> tuple[float, list[list[str]]]:
+    *,
+    labels: list[dict[str, Any] | None] | None,
+    requested_count: int | None = None,
+) -> tuple[float | None, list[list[str]]]:
     """
-    回傳 (csr, per_question_issues_list)
-    per_question_issues_list 長度 = len(questions)，內含每題違反項目（可能為空）
+    回傳 (csr, per_question_issues_list)；per_question_issues_list 長度 = len(questions)
+
+    labels：評審對每題的判定（{"difficulty", "bloom_level", "question_type"}，該題判定失敗為 None）；
+            整體為 None 表示無法評審，csr 為 None。限制一律比對評審的判定，不用題目自己標示的值。
+    requested_count：分母（要求的題數），未產出的題位算不符合；預設為 len(questions)。
     """
-    if not questions:
+    if labels is None:
+        return None, [[] for _ in questions]
+    total = _denominator(questions, requested_count)
+    if not total:
         return 0.0, []
     passed = 0
     issues_all: list[list[str]] = []
-    for q in questions:
-        ok, issues = _check_constraints(q, required)
+    for i, q in enumerate(questions):
+        judged = labels[i] if i < len(labels) else None
+        if judged is None:
+            issues_all.append(["not_judged"])
+            continue
+        ok, issues = _check_constraints(judged_question(q, judged), required)
         issues_all.append(issues)
         if ok:
             passed += 1
-    return passed / len(questions), issues_all
+    return passed / total, issues_all
 
 
 # =============================================================================
@@ -212,9 +263,12 @@ def _is_schema_consistent(q: GeneratedQuestion) -> tuple[bool, list[str]]:
 
 def compute_sc(
     questions: list[GeneratedQuestion],
+    *,
+    requested_count: int | None = None,
 ) -> tuple[float, list[list[str]]]:
-    """回傳 (sc, per_question_issues)。"""
-    if not questions:
+    """回傳 (sc, per_question_issues)；分母為要求的題數（未產出的題位算不一致），預設為 len(questions)。"""
+    total = _denominator(questions, requested_count)
+    if not total:
         return 0.0, []
     consistent = 0
     issues_all: list[list[str]] = []
@@ -223,7 +277,7 @@ def compute_sc(
         issues_all.append(issues)
         if ok:
             consistent += 1
-    return consistent / len(questions), issues_all
+    return consistent / total, issues_all
 
 
 # =============================================================================
@@ -233,14 +287,15 @@ def compute_task_success(
     *,
     questions_generated: int,
     requested_count: int,
-    csr: float,
+    csr: float | None,
     sc: float,
     csr_threshold: float = DEFAULT_CSR_THRESHOLD,
     sc_threshold: float = DEFAULT_SC_THRESHOLD,
 ) -> bool:
+    """CSR 為 None（無法評審）時不檢查 CSR。"""
     if questions_generated < requested_count:
         return False
-    if csr < csr_threshold:
+    if csr is not None and csr < csr_threshold:
         return False
     if sc < sc_threshold:
         return False
@@ -254,12 +309,19 @@ def evaluate_case(
     case: GenExamTestCase,
     questions: list[GeneratedQuestion],
     *,
+    final_questions: list[GeneratedQuestion],
     topic_concept_ids: set[str],
     gen_time_sec: float,
+    judged_labels: list[dict[str, Any] | None] | None = None,
+    csr_source: str = CSR_SOURCE_UNAVAILABLE,
     csr_threshold: float = DEFAULT_CSR_THRESHOLD,
     sc_threshold: float = DEFAULT_SC_THRESHOLD,
 ) -> CaseMetrics:
-    """計算單一 case 的所有指標，回傳 `CaseMetrics`。"""
+    """計算單一 case 的所有指標，回傳 `CaseMetrics`。
+
+    questions：通過驗證的題目（KC 與題數）；final_questions：每個題位最後一次的題目（CSR、SC）；
+    judged_labels：評審對 final_questions 的判定，None 表示無法評審（CSR 為 N/A）。
+    """
     # 依 case 整理出 runner 須驗的「實際限制條件」（不含 topic / count）
     required: dict[str, Any] = {"question_type": case.question_type}
     if case.difficulty is not None:
@@ -268,8 +330,10 @@ def evaluate_case(
         required["bloom_level"] = case.bloom_level
 
     kc = compute_kc(questions, topic_concept_ids)
-    csr, csr_issues = compute_csr(questions, required)
-    sc, sc_issues = compute_sc(questions)
+    csr, csr_issues = compute_csr(final_questions, required, labels=judged_labels, requested_count=case.count)
+    sc, sc_issues = compute_sc(final_questions, requested_count=case.count)
+    if judged_labels is None:
+        csr_source = CSR_SOURCE_UNAVAILABLE
     success = compute_task_success(
         questions_generated=len(questions),
         requested_count=case.count,
@@ -279,14 +343,17 @@ def evaluate_case(
         sc_threshold=sc_threshold,
     )
 
+    accepted_ids = {q.question_id for q in questions}
     per_q: list[dict[str, Any]] = []
-    for i, q in enumerate(questions):
+    for i, q in enumerate(final_questions):
         per_q.append(
             {
                 "question_id": q.question_id,
+                "accepted": q.question_id in accepted_ids,
                 "question_type": q.question_type,
                 "difficulty": q.difficulty,
                 "bloom_level": q.bloom_level,
+                "judged": judged_labels[i] if judged_labels is not None and i < len(judged_labels) else None,
                 "csr_issues": csr_issues[i] if i < len(csr_issues) else [],
                 "sc_issues": sc_issues[i] if i < len(sc_issues) else [],
                 "knowledge_refs": list(q.knowledge_refs),
@@ -306,6 +373,7 @@ def evaluate_case(
         gen_time_sec=gen_time_sec,
         constraints_required=required,
         per_question=per_q,
+        csr_source=csr_source,
     )
 
 
@@ -328,14 +396,15 @@ def aggregate_metrics(case_metrics: list[CaseMetrics]) -> dict[str, Any]:
                 "task_success_rate": 0.0, "avg_gen_time_sec": 0.0,
             }
         kc = statistics.mean(m.kc for m in buckets)
-        csr = statistics.mean(m.csr for m in buckets)
+        csr_values = [m.csr for m in buckets if m.csr is not None]      # N/A 的案例不列入
+        csr = statistics.mean(csr_values) if csr_values else None
         sc = statistics.mean(m.sc for m in buckets)
         success = statistics.mean(1.0 if m.task_success else 0.0 for m in buckets)
         gt = statistics.mean(m.gen_time_sec for m in buckets)
         return {
             "n_cases": len(buckets),
             "kc": round(kc, 4),
-            "csr": round(csr, 4),
+            "csr": round(csr, 4) if csr is not None else None,
             "sc": round(sc, 4),
             "task_success_rate": round(success, 4),
             "avg_gen_time_sec": round(gt, 4),
@@ -369,9 +438,8 @@ def format_results_table(agg: dict[str, Any]) -> str:
         multi = agg["multi_constraint"].get(key, 0.0)
         over = agg["overall"].get(key, 0.0)
         if unit == "%":
-            s.append(
-                f"{label:<38} | {single*100:>7.1f}% | {multi*100:>7.1f}% | {over*100:>7.1f}%"
-            )
+            cells = [format_rate(v, pct=True, digits=1) for v in (single, multi, over)]
+            s.append(f"{label:<38} | {cells[0]:>9} | {cells[1]:>9} | {cells[2]:>9}")
         else:
             s.append(
                 f"{label:<38} | {single:>8.2f}s | {multi:>8.2f}s | {over:>8.2f}s"
@@ -424,17 +492,25 @@ def _self_test() -> int:
     )
     questions = perfect + [bad]
 
+    # 4 題完美的通過驗證；評審的判定與題目標示相同
+    labels = [
+        {"difficulty": q.difficulty, "bloom_level": q.bloom_level, "question_type": q.question_type}
+        for q in questions
+    ]
     cm = evaluate_case(
         sample,
-        questions,
+        perfect,
+        final_questions=questions,
+        judged_labels=labels,
+        csr_source=CSR_SOURCE_EVAL_JUDGE,
         topic_concept_ids=topic_concepts,
         gen_time_sec=1.5,
     )
     print(f"sample case          : {sample.case_id}  ({sample.request})")
     print(f"questions_generated  : {cm.questions_generated} / {cm.requested_count}")
     print(f"KC  (4 distinct refs / 10 concepts = 0.4)   = {cm.kc:.2f}")
-    print(f"CSR (4 of 5 pass constraints = 0.8)         = {cm.csr:.2f}")
-    print(f"SC  (4 of 5 pass schema = 0.8)              = {cm.sc:.2f}")
+    print(f"CSR (4 of {cm.requested_count} judged as satisfying)          = {format_rate(cm.csr)}")
+    print(f"SC  (4 of {cm.requested_count} pass schema)                   = {cm.sc:.2f}")
     print(f"task_success                                = {cm.task_success}")
 
     agg = aggregate_metrics([cm, cm, cm])

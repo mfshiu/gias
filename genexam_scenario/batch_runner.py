@@ -32,6 +32,7 @@ from genexam_scenario.runner import (
     build_llm,
     run_case,
 )
+from genexam_scenario.metrics import format_rate
 from genexam_scenario.scope import NOTICE_LINES, scope_payload
 from genexam_scenario.test_cases import (
     GenExamTestCase,
@@ -79,6 +80,7 @@ def run_batch(
     fail_fast: bool = False,
     verbose_per_case: bool = False,
     seed: int | None = None,
+    eval_judge: bool = True,
 ) -> Path:
     """執行一批 cases，回傳輸出目錄路徑。"""
     _ensure_dir(RESULTS_ROOT)
@@ -91,6 +93,11 @@ def run_batch(
     print(f"  模式        : {'dry-run (mock)' if dry_run else 'live (LLM)'}")
     print(f"  LLM-judge   : {use_llm_judge}")
     print(f"  max_refine  : {max_refine}")
+    if dry_run or not (use_llm_judge or eval_judge):
+        csr_judge = "N/A（不評審）"
+    else:
+        csr_judge = "沿用驗證的 judge" if use_llm_judge else "LLM 評審"
+    print(f"  CSR 評審    : {csr_judge}")
     for line in NOTICE_LINES:
         print(f"  {line}")
     print()
@@ -121,6 +128,7 @@ def run_batch(
                     dry_run=dry_run,
                     verbose=verbose_per_case,
                     seed=seed,
+                    eval_judge=eval_judge,
                 )
                 _write_case_result(run_dir, result)
                 m = result.metrics
@@ -130,11 +138,11 @@ def run_batch(
                 else:
                     failures.append((
                         case.case_id,
-                        f"csr={m.csr:.2f} sc={m.sc:.2f} gen={m.questions_generated}/{m.requested_count}",
+                        f"csr={format_rate(m.csr)} sc={m.sc:.2f} gen={m.questions_generated}/{m.requested_count}",
                     ))
                 dt = time.monotonic() - t0
                 print(
-                    f" → {tag}  KC={m.kc:.2f} CSR={m.csr:.2f} "
+                    f" → {tag}  KC={m.kc:.2f} CSR={format_rate(m.csr)} "
                     f"SC={m.sc:.2f}  ({dt:5.1f}s)"
                 )
             except Exception as e:
@@ -167,6 +175,7 @@ def run_batch(
         "elapsed_sec": round(elapsed, 2),
         "mode": "dry-run" if dry_run else "live",
         "use_llm_judge": use_llm_judge,
+        "eval_judge": eval_judge,
         "max_refine": max_refine,
         "filters": {
             "case_ids": [c.case_id for c in cases],
@@ -257,6 +266,10 @@ def main(argv: list[str] | None = None) -> int:
         "--seed", type=int, default=None,
         help="random seed（影響 mock 與 knowledge 抽樣）",
     )
+    parser.add_argument(
+        "--no-eval-judge", action="store_true",
+        help="不另外呼叫 LLM 評審 CSR（CSR 記為 N/A；使用 --llm-judge 時沿用驗證的 judge）",
+    )
     args = parser.parse_args(argv)
 
     # 篩選案例
@@ -289,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         fail_fast=args.fail_fast,
         verbose_per_case=args.verbose,
         seed=args.seed,
+        eval_judge=not args.no_eval_judge,
     )
 
     if not args.no_analyze:
