@@ -19,7 +19,12 @@ def build_provider_client(cfg: LLMRuntimeConfig) -> tuple[ProviderClient, Option
 
         if not cfg.openai_api_key:
             raise RuntimeError("llm.openai.api_key is required in gias.toml for OpenAI provider.")
-        client = OpenAIProvider(api_key=cfg.openai_api_key)
+        client = OpenAIProvider(
+            api_key=cfg.openai_api_key,
+            base_url=cfg.openai_base_url,
+            use_responses=cfg.openai_use_responses,
+            default_model=cfg.openai_model,
+        )
         return client, cfg.openai_api_key, (cfg.openai_embed_model or "text-embedding-3-small")
 
     if provider == "ollama":

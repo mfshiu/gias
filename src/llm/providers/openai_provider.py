@@ -20,7 +20,8 @@ class OpenAIProvider(BaseProvider):
     """
     OpenAIProvider: 封裝 OpenAI Python SDK，提供統一 chat(messages, ...) 介面
 
-    Env vars (optional):
+    設定（gias.toml [llm.openai]，由 factory 傳入）：api_key、model（預設 gpt-4.1-mini）、base_url、use_responses。
+    未設定時的環境變數（optional）：
       - OPENAI_API_KEY
       - OPENAI_BASE_URL
       - OPENAI_ORG

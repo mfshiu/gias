@@ -35,7 +35,10 @@ retry_jitter = 0.1
 [llm.openai]
 # 也可以整行省略：沒有 api_key 時讀 OPENAI_API_KEY 環境變數
 api_key = "${OPENAI_API_KEY}"
+model = "gpt-4.1-mini"                  # 聊天模型（規劃、ScopeGate、監測判斷、最後回覆）
 embed_model = "text-embedding-3-small"
+# base_url = "https://..."               # 相容 OpenAI API 的其他端點
+# use_responses = false                  # true 改用 Responses API
 
 # [llm.ollama]
 # base_url = "http://localhost:11434"

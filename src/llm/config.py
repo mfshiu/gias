@@ -20,6 +20,9 @@ class LLMRuntimeConfig:
     # openai
     openai_api_key: Optional[str] = None
     openai_embed_model: Optional[str] = None
+    openai_model: str = "gpt-4.1-mini"          # 聊天模型（[llm.openai] model）
+    openai_base_url: Optional[str] = None       # 相容 OpenAI API 的其他端點（[llm.openai] base_url）
+    openai_use_responses: Optional[bool] = None  # True 走 Responses API；None 依 GIAS_OPENAI_USE_RESPONSES
 
     # ollama
     ollama_base_url: Optional[str] = None
@@ -46,6 +49,12 @@ def load_llm_runtime_config(agent_config: Dict[str, Any]) -> LLMRuntimeConfig:
     # 設定檔沒有金鑰時讀 OPENAI_API_KEY 環境變數（S-03：金鑰不必寫在 gias.toml）
     openai_api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY") or None
     openai_embed_model = openai_cfg.get("embed_model", "text-embedding-3-small") if openai_cfg else None
+    openai_model = str(openai_cfg.get("model") or "gpt-4.1-mini")
+    openai_base_url = openai_cfg.get("base_url") or None
+    use_responses = openai_cfg.get("use_responses")
+    if isinstance(use_responses, str):
+        use_responses = use_responses.strip().lower() in ("1", "true", "yes", "on")
+    openai_use_responses = None if use_responses is None else bool(use_responses)
 
     ollama_base_url = ollama_cfg.get("base_url", "http://localhost:11434") if ollama_cfg else None
     ollama_model = ollama_cfg.get("model", "llama3") if ollama_cfg else None
@@ -60,6 +69,9 @@ def load_llm_runtime_config(agent_config: Dict[str, Any]) -> LLMRuntimeConfig:
         embedding_cache_size=embedding_cache_size,
         openai_api_key=openai_api_key,
         openai_embed_model=openai_embed_model,
+        openai_model=openai_model,
+        openai_base_url=openai_base_url,
+        openai_use_responses=openai_use_responses,
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
     )
