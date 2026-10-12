@@ -3,7 +3,7 @@
 - **建立日期**：2026-10-09
 - **分析基準**：`main` @ `51ea57f`，加上工作目錄中尚未 commit 的修改（含 v2 監測子系統 `src/core/monitoring/`）
 - **測試現況**：離線單元測試（`tests/monitoring`、`tests/navigation_scenario`、`tests/agents`、`tests/test_execute_plan_with_monitoring.py`）共 548 個，全部通過
-- **總數**：43 項（嚴重 5／高 12／中 15／低 11；C-10 為修 C-08 時發現並一併修正）
+- **總數**：44 項（嚴重 5／高 13／中 15／低 11；C-10 為修 C-08 時發現並一併修正，V-07 為處理 V-04 時發現）
 
 ## 編號與分級規則
 
@@ -33,7 +33,7 @@
 
 | 類別 | 嚴重 | 高 | 中 | 低 |
 |---|---|---|---|---|
-| **V** 實驗驗證 | V-01, V-02 | V-03, V-04, V-05 | V-06 | — |
+| **V** 實驗驗證 | V-01, V-02 | V-03, V-04, V-05, V-07 | V-06 | — |
 | **L** 閉環／監測 | L-01 | L-02, L-03 | L-04 | L-05 |
 | **C** 正確性 | C-01, C-02 | C-03, C-04, C-10 | C-05 ~ C-08 | C-09 |
 | **A** 架構與論文主張的落差 | — | A-01, A-02 | A-03, A-04 | — |
@@ -41,7 +41,7 @@
 | **G** 通用性與耦合 | — | — | G-01, G-02 | G-03 |
 | **S** 安全 | — | S-01 | S-02, S-03 | S-04 |
 | **E** 工程品質 | — | E-01 | — | E-02 ~ E-06 |
-| **合計** | **5** | **12** | **15** | **11** |
+| **合計** | **5** | **13** | **15** | **11** |
 
 ---
 
@@ -55,13 +55,14 @@
 | **C-01** | 正確性 | 巢狀計畫的節點 ID 衝突：LLM 每層都從 "1" 開始編號，cursor 遇到重複 ID 就靜默略過（已實測重現，見附錄） | [planner.py:145](../src/core/intent/planner.py#L145)、[cursor.py:105](../src/core/monitoring/cursor.py#L105) | 子任務沒被執行，最後卻回報 `ok=True` | 已修正（8b0cbce） |
 | **C-02** | 正確性 | 沒有 action 或 topic 的 atomic 節點（`leaf_no_children`、`leaf_forced_atomic`，或 action 為空字串的節點）會繞過白名單檢查，被預設送到 `info.request`，而 InfoAgent 對未知 task 一律回成功 | [planner.py:122](../src/core/intent/planner.py#L122)、[planner.py:139](../src/core/intent/planner.py#L139)、[_executor_utils.py:55](../src/agents/_executor_utils.py#L55)、[info_agent.py:200](../src/agents/info_agent.py#L200) | 根本無法執行的步驟被記為成功（假成功） | 已修正（8b0cbce） |
 
-## 二、高（12 項）
+## 二、高（13 項）
 
 | 編號 | 類別 | 問題 | 位置 | 影響 | 狀態 |
 |---|---|---|---|---|---|
 | **V-03** | 實驗驗證 | experiment1 只用 `plan_intention()` 產生計畫，執行與重規劃都是 Dijkstra 模擬 | [experiment1/runner.py](../experiment1/runner.py) | 只驗證了規劃，沒驗證執行與調適 | 已修正（1d7d19e；標示為只驗證規劃，由 navigation_scenario live 模式取代） |
 | **V-04** | 實驗驗證 | GenExam 是 runner 內另外寫的一條「計畫、檢索、生成、驗證、修正」管線，沒有經過 IntentionalAgent | [genexam_scenario/runner.py](../genexam_scenario/runner.py) | 試題生成的結果不能直接歸功於 GIAS 這個通用框架 | 已修正（ccbcdbd；標示為獨立的出題管線，沒有經過 IntentionalAgent） |
 | **V-05** | 實驗驗證 | 論文提到的消融實驗（LLM-only、一般 RAG、拿掉 IPM、拿掉 MAS）在 repo 裡找不到程式 | — | 無法重現；若程式放在別處，請一併納入 | 不處理（repo 中沒有消融實驗的程式；對照實驗只用於驗證，不影響框架本身） |
+| **V-07** | 實驗驗證 | GenExam 的 CSR、SC 只計算通過驗證的題目，且沿用驗證時的同一套規則（`_check_constraints`、`_is_schema_consistent`）；未使用 `--llm-judge` 時，限制比對的是 LLM 自己標示的難度／Bloom／題型 | [runner.py:935](../genexam_scenario/runner.py#L935)、[metrics.py:253](../genexam_scenario/metrics.py#L253) | 只要有題目通過，SC 必為 100%，CSR 也是（使用 `--llm-judge` 時例外），Task Success 等於題數是否達標；報告中的 100% 不能當作題目實際符合限制的證據（V-04 已在報告中標示） | 未處理 |
 | **L-02** | 閉環／監測 | 子樹和根層的重規劃都不使用 `env_facts`，等於用同樣的輸入再問一次 LLM | [intentional_agent.py:788](../src/core/intentional_agent.py#L788) | 重規劃很可能得到同樣的計畫 | 已修正（3b4495c） |
 | **L-03** | 閉環／監測 | LLM 輔助觸發沒有接上：`enable_llm_assist` 預設為 False，也沒有注入 `llm_decider` | [trigger.py:35](../src/core/monitoring/trigger.py#L35)、[intentional_agent.py:542](../src/core/intentional_agent.py#L542) | REPAIR_NODE 分支永遠走不到 | 已修正（3b4495c） |
 | **C-03** | 正確性 | ScopeGate 的 `decide()` 自己吞掉例外並回傳 `can_execute=True`，所以 strict 設定無效 | [scope_gate.py:53](../src/core/intent/scope_gate.py#L53)、[intentional_agent.py:329](../src/core/intentional_agent.py#L329) | `scope_gate_strict = true` 形同虛設，判斷出錯時會直接放行 | 已修正（8b0cbce） |
@@ -601,7 +602,7 @@ LLM 輸出原本就受白名單動作、參數 schema、前置條件、ScopeGate
 
 檢查時發現：
 - `seed_actions` 寫入的 11 個 GVR action（含 UpdateIntention）和 Blackboard 上的 GVR Agent 節點，目前都沒有程式使用
-- CSR 與 SC 只計算通過驗證的題目，並沿用驗證時的同一套規則，所以只要有題目通過，SC 就是 100%；未使用 `--llm-judge` 時 CSR 也是 100%（比對的是 LLM 自己標示的難度／Bloom／題型），Task Success 實際上等於題數是否達標。報告中 CSR、SC 的 100% 是計算方式決定的，不能當作題目實際符合限制的證據。本次只標示，沒有改計算方式
+- CSR 與 SC 只計算通過驗證的題目，並沿用驗證時的同一套規則，所以只要有題目通過，SC 就是 100%；未使用 `--llm-judge` 時 CSR 也是 100%（比對的是 LLM 自己標示的難度／Bloom／題型），Task Success 實際上等於題數是否達標。報告中 CSR、SC 的 100% 是計算方式決定的，不能當作題目實際符合限制的證據。本次只標示，沒有改計算方式（已列為 V-07）
 
 新增測試 11 個（`tests/genexam_scenario/test_genexam_scope.py`），其中一個確認上述 CSR／SC 的前提，計算方式改變時會提醒更新標示；並以突變測試確認 10 個關鍵行為在還原後會被測試抓到。全部非 integration 測試共 1112 個通過、10 個略過、0 個失敗。
 
