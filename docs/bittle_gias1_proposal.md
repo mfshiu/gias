@@ -1,5 +1,6 @@
 # 以 Petoi Bittle X V2 實現 GIAS1 陪伴寵物：提案
 
+> 工作筆記；正式提案見 docs/volo_proposal.md（2026-10-28 起以該文件為準）。
 > 2026-10-28。延續 docs/cat_robot_plan.md（實體陪伴寵物）與 docs/pet_game_plan.md（數位分身），改以現成可開發的四足機器狗 Bittle X V2 當身體。心智仍是 GIAS1；核心零修改。
 > 規格來自 Petoi 官方指南、文件中心與經銷商頁面（文末列出）；兩處文件互相矛盾的地方已標出，收到機器第一天要實測。
 
